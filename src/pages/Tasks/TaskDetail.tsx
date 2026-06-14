@@ -43,7 +43,7 @@ import type { ProjectNode } from '@/types';
 export const TaskDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { projects, startNode, completeNode, addDeliverable, addComment, submitForApproval, approveNodeMulti, rejectNodeMulti, getNodeApprovalInfo } = useProjectStore();
+  const { projects, startNode, completeNode, addDeliverable, addComment, submitForApproval, approveNodeMulti, rejectNodeMulti, getNodeApprovalInfo, getPendingApprovals } = useProjectStore();
   const { getUserById, currentUser } = useUserStore();
   const { getTemplateById } = useTemplateStore();
   const { createException } = useExceptionStore();
@@ -61,6 +61,8 @@ export const TaskDetail = () => {
     remedyAction: '',
   });
   const [approvalComment, setApprovalComment] = useState('');
+  const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
+  const [showPendingLink, setShowPendingLink] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -149,17 +151,33 @@ export const TaskDetail = () => {
   };
 
   const handleApproveNode = () => {
-    if (!task || !project) return;
+    if (!task || !project || isSubmittingApproval) return;
+    setIsSubmittingApproval(true);
     approveNodeMulti(project.id, task.id, currentUser.id, currentUser.role, approvalComment);
     refreshTask();
     setApprovalComment('');
+    setTimeout(() => {
+      setIsSubmittingApproval(false);
+      const pendingCount = getPendingApprovals(currentUser.id).length;
+      if (pendingCount > 0) {
+        setShowPendingLink(true);
+      }
+    }, 1500);
   };
 
   const handleRejectNodeWithApproval = () => {
-    if (!task || !project) return;
+    if (!task || !project || !approvalComment.trim() || isSubmittingApproval) return;
+    setIsSubmittingApproval(true);
     rejectNodeMulti(project.id, task.id, currentUser.id, currentUser.role, approvalComment);
     refreshTask();
     setApprovalComment('');
+    setTimeout(() => {
+      setIsSubmittingApproval(false);
+      const pendingCount = getPendingApprovals(currentUser.id).length;
+      if (pendingCount > 0) {
+        setShowPendingLink(true);
+      }
+    }, 1500);
   };
 
   const handleUploadDeliverable = () => {
@@ -686,62 +704,103 @@ export const TaskDetail = () => {
                 </>
               )}
 
-              {task.status === 'pending_approval' && canApprove && (
-                <>
-                  {task.approvalStages.length > 1 && task.currentStageOrder > 0 && (
-                    <div className="p-3 bg-violet-50 border border-violet-200 rounded-lg mb-3">
-                      <p className="text-xs text-violet-700">
-                        这是第 {task.currentStageOrder} / {task.approvalStages.length} 级审批
-                        （{task.approvalStages.find(s => s.order === task.currentStageOrder)?.label || ''}）
-                        {task.currentStageOrder < task.approvalStages.length &&
-                          `，通过后将进入${task.approvalStages.find(s => s.order === task.currentStageOrder + 1)?.label || '管理员终审'}`
-                        }
+              {(() => {
+                if (!project || !task) return null;
+                const approvalInfo = getNodeApprovalInfo(project.id, task.id, currentUser.id);
+                const currentStage = task.approvalStages.find(s => s.order === task.currentStageOrder);
+                const canApproveNow = approvalInfo.canApprove && !isSubmittingApproval;
+                const pendingCount = getPendingApprovals(currentUser.id).length;
+
+                if (showPendingLink && pendingCount > 0) {
+                  return (
+                    <div className="p-4 bg-violet-50 rounded-xl mb-3 border border-violet-100">
+                      <button
+                        onClick={() => navigate('/approvals')}
+                        className="w-full flex items-center justify-center gap-2 text-violet-600 hover:text-violet-700 font-medium text-sm"
+                      >
+                        还有 {pendingCount} 条待您审批 →
+                      </button>
+                    </div>
+                  );
+                }
+
+                if (task.status !== 'pending_approval') {
+                  return (
+                    <div className="p-4 bg-slate-50 rounded-lg text-center mb-3 border border-slate-200">
+                      <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                      <p className="text-sm text-slate-500 font-medium">当前状态无法审批</p>
+                    </div>
+                  );
+                }
+
+                if (!currentStage) {
+                  return null;
+                }
+
+                if (currentStage.status !== 'pending') {
+                  return (
+                    <div className="p-4 bg-slate-50 rounded-lg text-center mb-3 border border-slate-200">
+                      <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                      <p className="text-sm text-slate-500 font-medium">已处理，请等待下一阶段</p>
+                    </div>
+                  );
+                }
+
+                if (currentStage.role !== currentUser.role) {
+                  const stageApprover = currentStage.approverId ? getUserById(currentStage.approverId) : null;
+                  return (
+                    <div className="p-4 bg-slate-50 rounded-lg text-center mb-3 border border-slate-200">
+                      <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                      <p className="text-sm text-slate-500 font-medium">
+                        当前阶段需要 {stageApprover?.name || roleLabels[currentStage.role as keyof typeof roleLabels]} 审批
                       </p>
                     </div>
-                  )}
-                  <div className="mb-3">
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">审批意见（选填）</label>
-                    <textarea
-                      value={approvalComment}
-                      onChange={(e) => setApprovalComment(e.target.value)}
-                      placeholder="请输入审批意见..."
-                      rows={3}
-                      className="w-full px-4 py-2.5 border border-violet-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none bg-white"
-                    />
-                  </div>
-                  <button
-                    onClick={handleApproveNode}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg transition-colors mb-3"
-                  >
-                    <ThumbsUp className="w-5 h-5" />
-                    审批通过
-                  </button>
-                  <button
-                    onClick={handleRejectNodeWithApproval}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-lg transition-colors mb-3"
-                  >
-                    <ThumbsDown className="w-5 h-5" />
-                    审批退回
-                  </button>
-                </>
-              )}
+                  );
+                }
 
-              {task.status === 'pending_approval' && !canApprove && (
-                <div className="p-4 bg-slate-50 rounded-lg text-center mb-3 border border-slate-200">
-                  <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
-                  <p className="text-sm text-slate-600 font-medium">
-                    等待 {(() => {
-                      const info = project ? getNodeApprovalInfo(project.id, task.id, currentUser.id) : null;
-                      const stage = task.approvalStages.find(s => s.order === task.currentStageOrder);
-                      if (stage?.approverId) {
-                        const u = getUserById(stage.approverId);
-                        return u?.name || roleLabels[stage.role];
-                      }
-                      return info?.nextApproverRole ? roleLabels[info.nextApproverRole as keyof typeof roleLabels] || info.nextApproverRole : '审批人';
-                    })()} 审批
-                  </p>
-                </div>
-              )}
+                return (
+                  <>
+                    {task.approvalStages.length > 1 && task.currentStageOrder > 0 && (
+                      <div className="p-3 bg-violet-50 border border-violet-200 rounded-lg mb-3">
+                        <p className="text-xs text-violet-700">
+                          这是第 {task.currentStageOrder} / {task.approvalStages.length} 级审批
+                          （{currentStage.label || ''}）
+                          {task.currentStageOrder < task.approvalStages.length &&
+                            `，通过后将进入${task.approvalStages.find(s => s.order === task.currentStageOrder + 1)?.label || '管理员终审'}`
+                          }
+                        </p>
+                      </div>
+                    )}
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-slate-700 mb-1.5">审批意见（选填）</label>
+                      <textarea
+                        value={approvalComment}
+                        onChange={(e) => setApprovalComment(e.target.value)}
+                        placeholder="请输入审批意见..."
+                        rows={3}
+                        disabled={isSubmittingApproval}
+                        className="w-full px-4 py-2.5 border border-violet-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none bg-white disabled:opacity-50"
+                      />
+                    </div>
+                    <button
+                      onClick={handleApproveNode}
+                      disabled={!canApproveNow}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white font-medium rounded-lg transition-colors mb-3"
+                    >
+                      <ThumbsUp className="w-5 h-5" />
+                      审批通过
+                    </button>
+                    <button
+                      onClick={handleRejectNodeWithApproval}
+                      disabled={!canApproveNow || !approvalComment.trim()}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white font-medium rounded-lg transition-colors mb-3"
+                    >
+                      <ThumbsDown className="w-5 h-5" />
+                      审批退回
+                    </button>
+                  </>
+                );
+              })()}
 
               {task.status !== 'completed' && task.status !== 'pending_approval' && (
                 <button

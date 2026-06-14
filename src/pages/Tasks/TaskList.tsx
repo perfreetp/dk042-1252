@@ -4,15 +4,18 @@ import { Search, Filter, Calendar, Clock, AlertTriangle, CheckCircle, ChevronRig
 import { useProjectStore, useUserStore } from '@/store';
 import { StatusBadge, NodeTypeBadge } from '@/components/StatusBadge';
 import { EmptyState } from '@/components/EmptyState';
-import { formatDate, daysBetween, getTodayISO, isOverdue, getOverdueDays, getDaysUntilDue, isAtRisk, getDateStatus } from '@/utils';
+import { formatDate, daysBetween, getTodayISO, getDateStatus, isNodeRisky, isNodeOverdue, isAtRisk, isOverdue } from '@/utils';
 import type { Status, ProjectNode } from '@/types';
 
-const statusFilters: { value: Status | 'all'; label: string }[] = [
+type FilterValue = Status | 'all' | 'risk' | 'overdue';
+
+const statusFilters: { value: FilterValue; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'pending', label: '待处理' },
   { value: 'in_progress', label: '进行中' },
   { value: 'pending_approval', label: '待审批' },
-  { value: 'delayed', label: '已逾期' },
+  { value: 'overdue', label: '已逾期' },
+  { value: 'risk', label: '有风险' },
   { value: 'rejected', label: '已退回' },
 ];
 
@@ -26,7 +29,7 @@ export const TaskList = () => {
   const { projects, checkAndUpdateOverdue, getPendingApprovals } = useProjectStore();
   const { currentUser, getUserById } = useUserStore();
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<Status | 'all'>('all');
+  const [statusFilter, setStatusFilter] = useState<FilterValue>('all');
 
   useEffect(() => {
     checkAndUpdateOverdue();
@@ -64,7 +67,16 @@ export const TaskList = () => {
     const matchesSearch = task.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       task.projectName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       task.clientName.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
+    let matchesStatus = true;
+    if (statusFilter === 'all') {
+      matchesStatus = true;
+    } else if (statusFilter === 'overdue') {
+      matchesStatus = isNodeOverdue(task);
+    } else if (statusFilter === 'risk') {
+      matchesStatus = isNodeRisky(task) && !isNodeOverdue(task);
+    } else {
+      matchesStatus = task.status === statusFilter;
+    }
     return matchesSearch && matchesStatus;
   });
 
@@ -73,8 +85,8 @@ export const TaskList = () => {
     pending: allTasks.filter(t => t.status === 'pending').length,
     inProgress: allTasks.filter(t => t.status === 'in_progress').length,
     pendingApproval: allTasks.filter(t => t.status === 'pending_approval').length,
-    atRisk: allTasks.filter(t => t.status !== 'completed' && isAtRisk(t.dueDate)).length,
-    overdue: allTasks.filter(t => t.status !== 'completed' && isOverdue(t.dueDate)).length,
+    atRisk: allTasks.filter(t => isNodeRisky(t) && !isNodeOverdue(t)).length,
+    overdue: allTasks.filter(t => isNodeOverdue(t)).length,
   };
 
   const getPrerequisiteStatus = (task: TaskWithProject) => {
@@ -113,8 +125,11 @@ export const TaskList = () => {
       </div>
 
       <div className="p-8">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6 mb-8">
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('all')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
                 <ListTodo className="w-6 h-6 text-slate-600" />
@@ -125,7 +140,10 @@ export const TaskList = () => {
               </div>
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('pending')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
                 <Clock className="w-6 h-6 text-slate-600" />
@@ -136,7 +154,10 @@ export const TaskList = () => {
               </div>
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('in_progress')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center">
                 <CheckCircle className="w-6 h-6 text-amber-600" />
@@ -147,7 +168,10 @@ export const TaskList = () => {
               </div>
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('pending_approval')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-violet-100 flex items-center justify-center">
                 <FileCheck className="w-6 h-6 text-violet-600" />
@@ -158,14 +182,31 @@ export const TaskList = () => {
               </div>
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div
+            className="bg-orange-50 rounded-xl border border-orange-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('risk')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center">
                 <AlertTriangle className="w-6 h-6 text-orange-600" />
               </div>
               <div className="text-right">
-                <p className="text-3xl font-bold text-slate-800">{stats.atRisk}</p>
-                <p className="text-sm text-slate-500">有风险</p>
+                <p className="text-3xl font-bold text-orange-700">{stats.atRisk}</p>
+                <p className="text-sm text-orange-600">有风险</p>
+              </div>
+            </div>
+          </div>
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('overdue')}
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6 text-red-600" />
+              </div>
+              <div className="text-right">
+                <p className="text-3xl font-bold text-slate-800">{stats.overdue}</p>
+                <p className="text-sm text-slate-500">已逾期</p>
               </div>
             </div>
           </div>
@@ -215,8 +256,8 @@ export const TaskList = () => {
               const today = getTodayISO();
               const daysLeft = daysBetween(today, task.dueDate);
               const prereqStatus = getPrerequisiteStatus(task);
-              const isOverdueTask = isOverdue(task.dueDate) && task.status !== 'completed';
-              const isAtRiskTask = isAtRisk(task.dueDate) && task.status !== 'completed';
+              const isOverdueTask = isNodeOverdue(task);
+              const isAtRiskTask = isNodeRisky(task);
               const dueDateDisplay = getDueDateDisplay(task);
               const isApprovalTask = task.assigneeId !== currentUser.id;
 
@@ -241,13 +282,25 @@ export const TaskList = () => {
                           </span>
                         )}
                         {isOverdueTask && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium">
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium cursor-pointer hover:bg-red-200 transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/tasks/${task.id}`);
+                            }}
+                          >
                             <AlertTriangle className="w-3 h-3" />
                             已逾期
                           </span>
                         )}
                         {!isOverdueTask && isAtRiskTask && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-medium">
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-medium cursor-pointer hover:bg-orange-200 transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/tasks/${task.id}`);
+                            }}
+                          >
                             <Clock className="w-3 h-3" />
                             有风险
                           </span>

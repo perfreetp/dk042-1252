@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import {
   FileCheck,
   RefreshCw,
@@ -11,8 +11,6 @@ import {
   FileText,
   Check,
   X,
-  User,
-  Calendar,
   Link2,
   ChevronRight,
   History,
@@ -32,7 +30,7 @@ import {
 } from '@/utils';
 import type { ProjectNode, ApprovalType, Status } from '@/types';
 
-type QuickFilter = 'all' | 'pending_me' | 'approved_me' | 'passed' | 'rejected';
+type QuickFilter = 'all' | 'pending_me' | 'approved_me' | 'passed' | 'rejected' | 'manager' | 'admin' | 'multi_level';
 
 interface ApprovalNodeWithProject extends ProjectNode {
   projectName: string;
@@ -72,24 +70,35 @@ const getCurrentStageLabel = (node: ProjectNode): string => {
   return stages[approvedCount].label;
 };
 
-const canUserApprove = (node: ProjectNode, userRole: 'admin' | 'manager' | 'executor'): boolean => {
-  if (node.status !== 'pending_approval') return false;
-  const stages = getApprovalStages(node.approvalType);
-  if (stages.length === 0) return false;
-  const rejected = node.approvalHistory.find((r) => r.decision === 'rejected');
-  if (rejected) {
-    const stage = stages.find((s) => s.order === rejected.stageOrder);
-    return stage?.role === userRole;
+const getApprovalPermission = (node: ProjectNode, userRole: 'admin' | 'manager' | 'executor'): { canApprove: boolean; disabledReason: string | null } => {
+  if (node.status !== 'pending_approval') {
+    return { canApprove: false, disabledReason: '当前节点不在待审批状态' };
   }
-  const approvedCount = node.approvalHistory.filter((r) => r.decision === 'approved').length;
-  if (approvedCount >= stages.length) return false;
-  const currentStage = stages[approvedCount];
-  return currentStage.role === userRole;
+  if (!node.approvalStages || node.approvalStages.length === 0) {
+    return { canApprove: false, disabledReason: '未配置审批流程' };
+  }
+  const currentStageIdx = node.approvalStages.findIndex(s => s.order === node.currentStageOrder);
+  if (currentStageIdx < 0) {
+    return { canApprove: false, disabledReason: '无效的审批阶段' };
+  }
+  const currentStage = node.approvalStages[currentStageIdx];
+  if (currentStage.status !== 'pending') {
+    return { canApprove: false, disabledReason: '当前阶段已被处理' };
+  }
+  if (currentStage.role !== userRole) {
+    const roleLabels: Record<string, string> = { manager: '项目经理', admin: '管理员', executor: '执行人' };
+    return { canApprove: false, disabledReason: `此阶段需要${roleLabels[currentStage.role] || currentStage.role}审批` };
+  }
+  return { canApprove: true, disabledReason: null };
+};
+
+const canUserApprove = (node: ProjectNode, userRole: 'admin' | 'manager' | 'executor'): boolean => {
+  return getApprovalPermission(node, userRole).canApprove;
 };
 
 export const ApprovalsPage = () => {
   const { projects, getPendingApprovals, approveNodeMulti, rejectNodeMulti } = useProjectStore();
-  const { currentUser, getUserById, users } = useUserStore();
+  const { currentUser, getUserById } = useUserStore();
   const { templates } = useTemplateStore();
 
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
@@ -103,6 +112,8 @@ export const ApprovalsPage = () => {
   const [approvalComment, setApprovalComment] = useState('');
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -151,12 +162,26 @@ export const ApprovalsPage = () => {
     );
     const passed = allApprovalNodes.filter((n) => n.status === 'completed');
     const rejected = allApprovalNodes.filter((n) => n.status === 'rejected');
+    const managerApprovals = allApprovalNodes.filter((n) => 
+      n.approvalType === 'manager' || 
+      (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
+       n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'manager')
+    );
+    const adminApprovals = allApprovalNodes.filter((n) => 
+      n.approvalType === 'admin' || 
+      (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
+       n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'admin')
+    );
+    const multiLevelApprovals = allApprovalNodes.filter((n) => n.approvalType === 'multi_level');
     return {
       all: allApprovalNodes.length,
       pendingMe: pendingApprovals.length,
       approvedMe: myApproved.length,
       passed: passed.length,
       rejected: rejected.length,
+      manager: managerApprovals.length,
+      admin: adminApprovals.length,
+      multiLevel: multiLevelApprovals.length,
     };
   }, [allApprovalNodes, getPendingApprovals, currentUser.id]);
 
@@ -180,6 +205,23 @@ export const ApprovalsPage = () => {
         break;
       case 'rejected':
         result = result.filter((n) => n.status === 'rejected');
+        break;
+      case 'manager':
+        result = result.filter((n) => 
+          n.approvalType === 'manager' || 
+          (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
+           n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'manager')
+        );
+        break;
+      case 'admin':
+        result = result.filter((n) => 
+          n.approvalType === 'admin' || 
+          (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
+           n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'admin')
+        );
+        break;
+      case 'multi_level':
+        result = result.filter((n) => n.approvalType === 'multi_level');
         break;
     }
 
@@ -264,50 +306,79 @@ export const ApprovalsPage = () => {
     );
   };
 
-  const handleApprove = () => {
-    if (!selectedNode) return;
-    approveNodeMulti(selectedNode.projectId, selectedNode.id, currentUser.id, currentUser.role, approvalComment);
-    showToast('success', '审批通过成功');
-    setApprovalComment('');
-    setTimeout(() => {
-      const updated = projects.find((p) => p.id === selectedNode.projectId)?.nodes.find(
-        (n) => n.id === selectedNode.id
-      );
-      if (updated) {
-        const project = projects.find((p) => p.id === selectedNode.projectId);
-        const template = templates.find((t) => t.id === project?.templateId);
-        setSelectedNode({
-          ...updated,
-          projectName: project?.name || selectedNode.projectName,
-          projectId: selectedNode.projectId,
-          clientName: project?.clientName || selectedNode.clientName,
-          templateName: template?.name || selectedNode.templateName,
-        });
+  const moveToNextPending = (currentNodeId: string, action: 'approve' | 'reject') => {
+    const pendingApprovals = getPendingApprovals(currentUser.id);
+    const remaining = pendingApprovals.filter(n => n.id !== currentNodeId);
+    
+    if (remaining.length > 0) {
+      const nextNode = remaining[0];
+      const project = projects.find(p => p.id === nextNode.projectId);
+      const template = templates.find(t => t.id === project?.templateId);
+      if (project) {
+        setTimeout(() => {
+          setSelectedNode({
+            ...nextNode,
+            projectName: project.name,
+            projectId: project.id,
+            clientName: project.clientName,
+            templateName: template?.name || project.templateName || '-',
+          });
+          showToast('success', `已完成 1 项，还剩 ${remaining.length} 项待审批`);
+          
+          setTimeout(() => {
+            const row = document.querySelector(`tr[data-node-id="${nextNode.id}"]`);
+            row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 100);
+        }, 300);
       }
-    }, 100);
+    } else {
+      setSelectedNode(null);
+      showToast('success', action === 'approve' ? '审批通过成功，所有待办已完成' : '审批已退回，所有待办已完成');
+    }
+  };
+
+  const handleApprove = () => {
+    if (!selectedNode || submitting) return;
+    const permission = getApprovalPermission(selectedNode, currentUser.role);
+    if (!permission.canApprove) {
+      showToast('error', permission.disabledReason || '无权审批此节点');
+      return;
+    }
+    
+    setSubmitting(true);
+    const currentNodeId = selectedNode.id;
+    
+    approveNodeMulti(selectedNode.projectId, selectedNode.id, currentUser.id, currentUser.role, approvalComment);
+    setApprovalComment('');
+    
+    setTimeout(() => {
+      setSubmitting(false);
+      moveToNextPending(currentNodeId, 'approve');
+    }, 1500);
   };
 
   const handleReject = () => {
-    if (!selectedNode) return;
+    if (!selectedNode || submitting) return;
+    const permission = getApprovalPermission(selectedNode, currentUser.role);
+    if (!permission.canApprove) {
+      showToast('error', permission.disabledReason || '无权审批此节点');
+      return;
+    }
+    if (!approvalComment.trim()) {
+      showToast('error', '退回时必须填写审批意见');
+      return;
+    }
+    
+    setSubmitting(true);
+    const currentNodeId = selectedNode.id;
+    
     rejectNodeMulti(selectedNode.projectId, selectedNode.id, currentUser.id, currentUser.role, approvalComment);
-    showToast('success', '审批已退回');
     setApprovalComment('');
+    
     setTimeout(() => {
-      const updated = projects.find((p) => p.id === selectedNode.projectId)?.nodes.find(
-        (n) => n.id === selectedNode.id
-      );
-      if (updated) {
-        const project = projects.find((p) => p.id === selectedNode.projectId);
-        const template = templates.find((t) => t.id === project?.templateId);
-        setSelectedNode({
-          ...updated,
-          projectName: project?.name || selectedNode.projectName,
-          projectId: selectedNode.projectId,
-          clientName: project?.clientName || selectedNode.clientName,
-          templateName: template?.name || selectedNode.templateName,
-        });
-      }
-    }, 100);
+      setSubmitting(false);
+      moveToNextPending(currentNodeId, 'reject');
+    }, 1500);
   };
 
   const quickFilters: { key: QuickFilter; label: string; count: number; colorClass: string; activeClass: string }[] = [
@@ -345,6 +416,27 @@ export const ApprovalsPage = () => {
       count: stats.rejected,
       colorClass: 'bg-red-100 text-red-600',
       activeClass: 'bg-red-500 text-white',
+    },
+    {
+      key: 'manager',
+      label: '经理审批',
+      count: stats.manager,
+      colorClass: 'bg-cyan-100 text-cyan-600',
+      activeClass: 'bg-cyan-500 text-white',
+    },
+    {
+      key: 'admin',
+      label: '管理员审批',
+      count: stats.admin,
+      colorClass: 'bg-purple-100 text-purple-600',
+      activeClass: 'bg-purple-500 text-white',
+    },
+    {
+      key: 'multi_level',
+      label: '多级审批',
+      count: stats.multiLevel,
+      colorClass: 'bg-gradient-to-r from-cyan-100 to-purple-100 text-purple-600',
+      activeClass: 'bg-gradient-to-r from-cyan-500 to-purple-500 text-white',
     },
   ];
 
@@ -628,7 +720,7 @@ export const ApprovalsPage = () => {
         </div>
 
         <div className="flex-1 overflow-hidden relative">
-          <div className="h-full overflow-auto p-6 pr-0">
+          <div ref={listRef} className="h-full overflow-auto p-6 pr-0">
             {filteredNodes.length === 0 ? (
               <div className="pr-6">
                 <EmptyState
@@ -651,6 +743,8 @@ export const ApprovalsPage = () => {
                         <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">负责人</th>
                         <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">提交时间</th>
                         <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">当前阶段</th>
+                        <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">当前轮次</th>
+                        <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">上一轮意见</th>
                         <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">状态</th>
                         <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">操作</th>
                       </tr>
@@ -661,10 +755,27 @@ export const ApprovalsPage = () => {
                         const canApprove = canUserApprove(node, currentUser.role);
                         const pendingIds = getPendingApprovals(currentUser.id).map((n) => n.id);
                         const isMyApproval = pendingIds.includes(node.id);
+                        
+                        const approvedCount = node.approvalStages.filter(s => s.status === 'approved').length;
+                        const totalStages = node.approvalStages.length;
+                        const currentRound = approvedCount + 1;
+                        
+                        let lastComment: string | null = null;
+                        let lastCommentDecision: 'approved' | 'rejected' | null = null;
+                        if (node.approvalHistory.length > 0) {
+                          const lastRecord = [...node.approvalHistory].sort((a, b) => 
+                            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+                          )[0];
+                          if (lastRecord && lastRecord.comment) {
+                            lastComment = lastRecord.comment;
+                            lastCommentDecision = lastRecord.decision;
+                          }
+                        }
 
                         return (
                           <tr
                             key={node.id}
+                            data-node-id={node.id}
                             onClick={() => setSelectedNode(node)}
                             className={`hover:bg-violet-50/50 cursor-pointer transition-colors ${
                               selectedNode?.id === node.id ? 'bg-violet-50/70' : ''
@@ -725,6 +836,29 @@ export const ApprovalsPage = () => {
                               }`}>
                                 {getCurrentStageLabel(node)}
                               </span>
+                            </td>
+                            <td className="px-5 py-4">
+                              <span className="text-sm text-slate-600">
+                                {totalStages > 0 ? `第 ${currentRound}/${totalStages} 轮` : '-'}
+                              </span>
+                            </td>
+                            <td className="px-5 py-4">
+                              {lastComment ? (
+                                <span 
+                                  className={`text-sm truncate max-w-[150px] block ${
+                                    lastCommentDecision === 'rejected'
+                                      ? 'text-red-600'
+                                      : lastCommentDecision === 'approved'
+                                      ? 'text-emerald-600'
+                                      : 'text-slate-500'
+                                  }`}
+                                  title={lastComment}
+                                >
+                                  {lastComment.length > 20 ? lastComment.substring(0, 20) + '...' : lastComment}
+                                </span>
+                              ) : (
+                                <span className="text-sm text-slate-400">-</span>
+                              )}
                             </td>
                             <td className="px-5 py-4">
                               <StatusBadge status={node.status as Status} size="sm" />
@@ -906,45 +1040,95 @@ export const ApprovalsPage = () => {
                   )}
                 </div>
 
-                {canUserApprove(selectedNode, currentUser.role) && (
-                  <div className="bg-violet-50 rounded-xl p-5 border border-violet-100">
-                    <h3 className="text-sm font-semibold text-violet-700 mb-4 flex items-center gap-2">
-                      <FileCheck className="w-4 h-4" />
-                      审批操作
-                    </h3>
-                    <div className="mb-4">
-                      <label className="block text-xs font-medium text-slate-600 mb-2">审批意见</label>
-                      <textarea
-                        value={approvalComment}
-                        onChange={(e) => setApprovalComment(e.target.value)}
-                        placeholder="请输入审批意见..."
-                        rows={3}
-                        className="w-full px-4 py-2.5 border border-violet-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none bg-white"
-                        style={{ minHeight: '60px', maxHeight: '200px' }}
-                      />
+                {(() => {
+                  const permission = getApprovalPermission(selectedNode, currentUser.role);
+                  const isDisabled = !permission.canApprove || submitting;
+                  
+                  return (
+                    <div className={`rounded-xl p-5 border ${
+                      permission.canApprove 
+                        ? 'bg-violet-50 border-violet-100' 
+                        : 'bg-slate-50 border-slate-200'
+                    }`}>
+                      <h3 className={`text-sm font-semibold mb-4 flex items-center gap-2 ${
+                        permission.canApprove ? 'text-violet-700' : 'text-slate-500'
+                      }`}>
+                        <FileCheck className="w-4 h-4" />
+                        审批操作
+                      </h3>
+                      <div className="mb-4">
+                        <label className="block text-xs font-medium text-slate-600 mb-2">审批意见</label>
+                        <textarea
+                          value={approvalComment}
+                          onChange={(e) => setApprovalComment(e.target.value)}
+                          placeholder={isDisabled ? '无权限操作' : '请输入审批意见...'}
+                          rows={3}
+                          disabled={isDisabled}
+                          className={`w-full px-4 py-2.5 border rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none ${
+                            isDisabled 
+                              ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' 
+                              : 'bg-white border-violet-200'
+                          }`}
+                          style={{ minHeight: '60px', maxHeight: '200px' }}
+                        />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="relative flex-1 group">
+                          <button
+                            onClick={handleApprove}
+                            disabled={isDisabled}
+                            className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg transition-colors shadow-sm ${
+                              isDisabled
+                                ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                                : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                            }`}
+                          >
+                            <Check className="w-4 h-4" />
+                            {submitting ? '处理中...' : '审批通过'}
+                          </button>
+                          {!permission.canApprove && permission.disabledReason && (
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-800 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
+                              {permission.disabledReason}
+                              <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="relative flex-1 group">
+                          <button
+                            onClick={handleReject}
+                            disabled={isDisabled}
+                            className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg transition-colors shadow-sm ${
+                              isDisabled
+                                ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                                : 'bg-red-500 hover:bg-red-600 text-white'
+                            }`}
+                          >
+                            <X className="w-4 h-4" />
+                            {submitting ? '处理中...' : '审批退回'}
+                          </button>
+                          {!permission.canApprove && permission.disabledReason && (
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-800 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
+                              {permission.disabledReason}
+                              <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {!permission.canApprove && permission.disabledReason && (
+                        <p className="mt-3 text-xs text-amber-600 flex items-start gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                          {permission.disabledReason}
+                        </p>
+                      )}
+                      {permission.canApprove && (
+                        <p className="mt-3 text-xs text-red-500 flex items-start gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                          退回后节点将返回执行人重新修改
+                        </p>
+                      )}
                     </div>
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={handleApprove}
-                        className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
-                      >
-                        <Check className="w-4 h-4" />
-                        审批通过
-                      </button>
-                      <button
-                        onClick={handleReject}
-                        className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
-                      >
-                        <X className="w-4 h-4" />
-                        审批退回
-                      </button>
-                    </div>
-                    <p className="mt-3 text-xs text-red-500 flex items-start gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-                      退回后节点将返回执行人重新修改
-                    </p>
-                  </div>
-                )}
+                  );
+                })()}
 
                 <div className="bg-white rounded-xl border border-slate-200 p-5">
                   <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">

@@ -3,12 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { Calendar, Users, List, BarChart3, ChevronRight, Filter, Layers, Building2, Zap, AlertTriangle } from 'lucide-react';
 import { useProjectStore, useUserStore, useTemplateStore } from '@/store';
 import { Avatar } from '@/components/Avatar';
-import { formatDate, daysBetween, getTodayISO, addDays, isOverdue, isAtRisk, getDateRange } from '@/utils';
+import { formatDate, daysBetween, getTodayISO, addDays, getDateRange, getProjectRiskLevel, isNodeRisky, isNodeOverdue } from '@/utils';
 import { statusLabels, statusBorderColors } from '@/utils/status';
 import type { Project, ProjectNode, Status, User } from '@/types';
 
 interface GanttViewProps {
-  onViewChange: (view: 'list' | 'gantt') => void;
+  onViewChange: (view: 'list' | 'gantt' | 'workload') => void;
 }
 
 const DAY_WIDTH = 40;
@@ -117,19 +117,7 @@ const getPersonLoad = (userId: string, projects: Project[], totalDays: number): 
   };
 };
 
-const getProjectRiskLevel = (project: Project): RiskLevel => {
-  const projectOverdue = isOverdue(project.endDate);
-  const anyNodeOverdue = project.nodes.some(n => isOverdue(getNodeEnd(n)));
-  if (projectOverdue || anyNodeOverdue) return 'danger';
 
-  const projectAtRisk = isAtRisk(project.endDate);
-  const riskNodeCount = project.nodes.filter(n => isAtRisk(getNodeEnd(n)) && n.status !== 'completed').length;
-  const totalNodes = project.nodes.filter(n => n.status !== 'completed').length;
-  const riskRatio = totalNodes > 0 ? riskNodeCount / totalNodes : 0;
-  if (projectAtRisk || riskRatio >= 0.3) return 'warning';
-
-  return 'normal';
-};
 
 const isOnCriticalPath = (project: Project, nodeId: string, criticalPathMap: Map<string, Set<string>>): boolean => {
   return criticalPathMap.get(project.id)?.has(nodeId) || false;
@@ -790,6 +778,8 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
                   const dimmed = criticalPathOnly && !isCritical;
                   const isToday = todayPosition >= startOffset && todayPosition <= startOffset + width;
                   const hasContinuousOverload = isNodeInContinuousOverload(node, row.project.startDate, node.assigneeId, myProjects);
+                  const isRisky = node.status !== 'completed' && isNodeRisky(node);
+                  const isOverdue = node.status !== 'completed' && isNodeOverdue(node);
 
                   const bgClass = statusBorderColors[node.status] || 'bg-slate-50 border-slate-300';
                   const borderColors: Record<Status, string> = {
@@ -811,6 +801,13 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
                     )`,
                   } : {};
 
+                  const getRiskBorderClass = () => {
+                    if (node.status === 'completed') return '';
+                    if (isOverdue) return 'ring-2 ring-red-500 ring-offset-1';
+                    if (isRisky) return 'ring-2 ring-orange-400 ring-offset-1';
+                    return '';
+                  };
+
                   return (
                     <div key={`nodeline-${rowIdx}-${node.id}`}>
                       <div
@@ -820,7 +817,7 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
                       <div
                         className={`absolute rounded-md cursor-pointer border-l-4 transition-all hover:shadow-md ${bgClass} ${borderColors[node.status]} ${
                           isCritical ? 'ring-2 ring-amber-400 ring-offset-1' : ''
-                        } ${isToday ? 'ring-1 ring-red-300' : ''} ${dimmed ? 'opacity-50' : ''}`}
+                        } ${isToday ? 'ring-1 ring-red-300' : ''} ${dimmed ? 'opacity-50' : ''} ${getRiskBorderClass()} focus:outline-none focus:ring-4 ${isOverdue ? 'focus:ring-red-300' : isRisky ? 'focus:ring-orange-300' : 'focus:ring-amber-300'}`}
                         style={{
                           left: startOffset + 2,
                           top: rowIdx * ROW_HEIGHT + ROW_HEIGHT + 6,
@@ -828,7 +825,7 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
                           height: ROW_HEIGHT - 12,
                           ...dashedBgStyle,
                         }}
-                        onClick={() => navigate(`/projects/${row.project.id}`)}
+                        onClick={() => navigate(`/projects/${row.project.id}?nodeId=${node.id}`)}
                         onMouseEnter={(e) => {
                           setHoveredNode({
                             node,
@@ -838,6 +835,7 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
                           });
                         }}
                         onMouseLeave={() => setHoveredNode(null)}
+                        tabIndex={0}
                       >
                         {width > 100 && (
                           <div className="px-2 h-full flex items-center">

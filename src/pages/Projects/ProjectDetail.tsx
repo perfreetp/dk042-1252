@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   ArrowLeft,
   Calendar,
@@ -25,10 +25,6 @@ import {
   formatDateTime,
   daysBetween,
   getTodayISO,
-  isOverdue,
-  getOverdueDays,
-  getDaysUntilDue,
-  isAtRisk,
   getDateStatus,
   nodeTypeLabels,
   nodeTypeBgColors,
@@ -37,12 +33,16 @@ import {
   approvalDecisionLabels,
   approvalDecisionColors,
   roleLabels,
+  isNodeRisky,
+  isNodeOverdue,
+  isOverdue,
 } from '@/utils';
 import type { ProjectNode, ApprovalDecision } from '@/types';
 
 export const ProjectDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { getProjectById, startNode, completeNode, rejectNode, addDeliverable, addComment, submitForApproval, approveNodeMulti, rejectNodeMulti, getPendingApprovals, getNodeApprovalInfo } = useProjectStore();
   const { getUserById, currentUser } = useUserStore();
   const { getTemplateById } = useTemplateStore();
@@ -66,13 +66,29 @@ export const ProjectDetail = () => {
     impactScope: '',
     remedyAction: '',
   });
+  const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
 
   useEffect(() => {
     if (id) {
       const updated = getProjectById(id);
       if (updated) {
         setProject(updated);
-        if (selectedNode) {
+        
+        const params = new URLSearchParams(location.search);
+        const nodeId = params.get('nodeId');
+        const hasRiskParam = params.get('risk') === '1';
+        
+        if (nodeId) {
+          const targetNode = updated.nodes.find(n => n.id === nodeId);
+          if (targetNode) {
+            setSelectedNode(targetNode);
+          }
+        } else if (hasRiskParam && !selectedNode) {
+          const firstRiskNode = updated.nodes.find(n => isNodeOverdue(n)) || updated.nodes.find(n => isNodeRisky(n));
+          if (firstRiskNode) {
+            setSelectedNode(firstRiskNode);
+          }
+        } else if (selectedNode) {
           const updatedNode = updated.nodes.find(n => n.id === selectedNode.id);
           if (updatedNode) {
             setSelectedNode(updatedNode);
@@ -80,7 +96,7 @@ export const ProjectDetail = () => {
         }
       }
     }
-  }, [id, getProjectById, selectedNode]);
+  }, [id, getProjectById, selectedNode, location.search]);
 
   if (!project) {
     return (
@@ -215,7 +231,8 @@ export const ProjectDetail = () => {
   };
 
   const handleApproveNode = () => {
-    if (!selectedNode) return;
+    if (!selectedNode || isSubmittingApproval) return;
+    setIsSubmittingApproval(true);
     approveNodeMulti(project.id, selectedNode.id, currentUser.id, currentUser.role, approvalComment);
     const updated = getProjectById(project.id);
     if (updated) {
@@ -225,10 +242,12 @@ export const ProjectDetail = () => {
     }
     setShowApprovalModal(false);
     setApprovalComment('');
+    setTimeout(() => setIsSubmittingApproval(false), 1500);
   };
 
   const handleRejectNodeWithApproval = () => {
-    if (!selectedNode || !rejectApprovalComment.trim()) return;
+    if (!selectedNode || !rejectApprovalComment.trim() || isSubmittingApproval) return;
+    setIsSubmittingApproval(true);
     rejectNodeMulti(project.id, selectedNode.id, currentUser.id, currentUser.role, rejectApprovalComment);
     addComment(project.id, selectedNode.id, {
       content: `【审批退回】${rejectApprovalComment}`,
@@ -242,6 +261,7 @@ export const ProjectDetail = () => {
     }
     setShowRejectApprovalModal(false);
     setRejectApprovalComment('');
+    setTimeout(() => setIsSubmittingApproval(false), 1500);
   };
 
   const handleManagerRejectNode = () => {
@@ -278,9 +298,8 @@ export const ProjectDetail = () => {
     return null;
   };
 
-  const today = getTodayISO();
-  const daysLeft = daysBetween(today, project.endDate);
   const progress = getProjectProgress();
+  const dateStatus = getDateStatus(project.endDate, project.status);
 
   return (
     <div className="animate-fade-in min-h-screen">
@@ -314,14 +333,14 @@ export const ProjectDetail = () => {
             <Calendar className="w-4 h-4" />
             <span>{formatDate(project.startDate)} - {formatDate(project.endDate)}</span>
           </div>
-          {project.status !== 'completed' && (
-            <div className="flex items-center gap-2 text-slate-500">
-              <Clock className="w-4 h-4" />
-              <span className={daysLeft < 3 ? 'text-red-600 font-medium' : ''}>
-                {daysLeft > 0 ? `剩余 ${daysLeft} 天` : daysLeft === 0 ? '今天截止' : `已超期 ${Math.abs(daysLeft)} 天`}
-              </span>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            <span className={dateStatus.className}>
+              {dateStatus.level === 'danger' && <AlertTriangle className="inline w-4 h-4 mr-1" />}
+              {dateStatus.level === 'warning' && <Clock className="inline w-4 h-4 mr-1" />}
+              {dateStatus.label}
+              <span className="text-slate-400 ml-1">({formatDate(project.endDate)})</span>
+            </span>
+          </div>
           {manager && (
             <div className="flex items-center gap-2 text-slate-500">
               <User className="w-4 h-4" />
@@ -559,15 +578,14 @@ export const ProjectDetail = () => {
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">截止日期</label>
                     <div className="flex flex-col gap-1">
-                      <p className="text-slate-800">{formatDate(selectedNode.dueDate)}</p>
                       {(() => {
                         const ds = getDateStatus(selectedNode.dueDate, selectedNode.status);
-                        if (ds.level === 'completed') return null;
-                        const Icon = ds.level === 'danger' ? AlertTriangle : ds.level === 'warning' ? Clock : Clock;
                         return (
-                          <span className={`inline-flex items-center gap-1 text-xs font-medium ${ds.className}`}>
-                            <Icon className="w-3 h-3" />
+                          <span className={ds.className}>
+                            {ds.level === 'danger' && <AlertTriangle className="inline w-4 h-4 mr-1" />}
+                            {ds.level === 'warning' && <Clock className="inline w-4 h-4 mr-1" />}
                             {ds.label}
+                            <span className="text-slate-400 ml-1">({formatDate(selectedNode.dueDate)})</span>
                           </span>
                         );
                       })()}
@@ -609,66 +627,93 @@ export const ProjectDetail = () => {
                   </div>
                 )}
 
-                {isApprover(selectedNode) && selectedNode.status === 'pending_approval' && (
-                  <div className="p-4 bg-violet-50 rounded-xl mb-6 border border-violet-100">
-                    <h4 className="font-semibold text-violet-800 mb-2 flex items-center gap-2">
-                      <Clock className="w-4 h-4" />
-                      待您审批
-                    </h4>
-                    {selectedNode.approvalStages.length > 1 && (
-                      <p className="text-xs text-violet-600 mb-3">
-                        这是第 {selectedNode.currentStageOrder} / {selectedNode.approvalStages.length} 级审批
-                        （{selectedNode.approvalStages.find(s => s.order === selectedNode.currentStageOrder)?.label || ''}）
-                        {selectedNode.currentStageOrder < selectedNode.approvalStages.length &&
-                          `，通过后将进入${selectedNode.approvalStages.find(s => s.order === selectedNode.currentStageOrder + 1)?.label || '下一阶段'}`
-                        }
-                      </p>
-                    )}
-                    <div className="mb-3">
-                      <label className="block text-sm font-medium text-violet-700 mb-1.5">审批意见（选填）</label>
-                      <textarea
-                        value={approvalComment}
-                        onChange={(e) => setApprovalComment(e.target.value)}
-                        placeholder="请输入审批意见..."
-                        rows={3}
-                        className="w-full px-3 py-2 border border-violet-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none bg-white"
-                      />
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setShowRejectApprovalModal(true)}
-                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-red-500 hover:bg-red-600 text-white font-medium rounded-lg transition-colors text-sm"
-                      >
-                        <XCircle className="w-4 h-4" />
-                        审批退回
-                      </button>
-                      <button
-                        onClick={handleApproveNode}
-                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg transition-colors text-sm"
-                      >
-                        <CheckCircle2 className="w-4 h-4" />
-                        审批通过
-                      </button>
-                    </div>
-                  </div>
-                )}
+                {(() => {
+                  if (!project || !selectedNode) return null;
+                  const approvalInfo = getNodeApprovalInfo(project.id, selectedNode.id, currentUser.id);
+                  const currentStage = selectedNode.approvalStages.find(s => s.order === selectedNode.currentStageOrder);
+                  const canApprove = approvalInfo.canApprove && !isSubmittingApproval;
 
-                {selectedNode.status === 'pending_approval' && !isApprover(selectedNode) && (
-                  <div className="p-4 bg-slate-50 rounded-xl mb-6 border border-slate-200 text-center">
-                    <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
-                    <p className="text-sm text-slate-600 font-medium">
-                      等待 {(() => {
-                        const info = project ? getNodeApprovalInfo(project.id, selectedNode.id, currentUser.id) : null;
-                        const stage = selectedNode.approvalStages.find(s => s.order === selectedNode.currentStageOrder);
-                        if (stage?.approverId) {
-                          const u = getUserById(stage.approverId);
-                          return u?.name || roleLabels[stage.role];
-                        }
-                        return info?.nextApproverRole ? roleLabels[info.nextApproverRole as keyof typeof roleLabels] || info.nextApproverRole : '审批人';
-                      })()} 审批
-                    </p>
-                  </div>
-                )}
+                  if (selectedNode.status !== 'pending_approval') {
+                    return (
+                      <div className="p-4 bg-slate-50 rounded-xl mb-6 border border-slate-200 text-center">
+                        <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                        <p className="text-sm text-slate-500 font-medium">当前状态无法审批</p>
+                      </div>
+                    );
+                  }
+
+                  if (!currentStage) {
+                    return null;
+                  }
+
+                  if (currentStage.status !== 'pending') {
+                    return (
+                      <div className="p-4 bg-slate-50 rounded-xl mb-6 border border-slate-200 text-center">
+                        <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                        <p className="text-sm text-slate-500 font-medium">已处理，请等待下一阶段</p>
+                      </div>
+                    );
+                  }
+
+                  if (currentStage.role !== currentUser.role) {
+                    const stageApprover = currentStage.approverId ? getUserById(currentStage.approverId) : null;
+                    return (
+                      <div className="p-4 bg-slate-50 rounded-xl mb-6 border border-slate-200 text-center">
+                        <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                        <p className="text-sm text-slate-500 font-medium">
+                          当前阶段需要 {stageApprover?.name || roleLabels[currentStage.role as keyof typeof roleLabels]} 审批
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="p-4 bg-violet-50 rounded-xl mb-6 border border-violet-100">
+                      <h4 className="font-semibold text-violet-800 mb-2 flex items-center gap-2">
+                        <Clock className="w-4 h-4" />
+                        待您审批
+                      </h4>
+                      {selectedNode.approvalStages.length > 1 && (
+                        <p className="text-xs text-violet-600 mb-3">
+                          这是第 {selectedNode.currentStageOrder} / {selectedNode.approvalStages.length} 级审批
+                          （{currentStage.label || ''}）
+                          {selectedNode.currentStageOrder < selectedNode.approvalStages.length &&
+                            `，通过后将进入${selectedNode.approvalStages.find(s => s.order === selectedNode.currentStageOrder + 1)?.label || '下一阶段'}`
+                          }
+                        </p>
+                      )}
+                      <div className="mb-3">
+                        <label className="block text-sm font-medium text-violet-700 mb-1.5">审批意见（选填）</label>
+                        <textarea
+                          value={approvalComment}
+                          onChange={(e) => setApprovalComment(e.target.value)}
+                          placeholder="请输入审批意见..."
+                          rows={3}
+                          disabled={isSubmittingApproval}
+                          className="w-full px-3 py-2 border border-violet-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none bg-white disabled:opacity-50"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setShowRejectApprovalModal(true)}
+                          disabled={!canApprove}
+                          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white font-medium rounded-lg transition-colors text-sm"
+                        >
+                          <XCircle className="w-4 h-4" />
+                          审批退回
+                        </button>
+                        <button
+                          onClick={handleApproveNode}
+                          disabled={!canApprove}
+                          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white font-medium rounded-lg transition-colors text-sm"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          审批通过
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {selectedNode.status === 'pending' && canStartNode(selectedNode) && selectedNode.assigneeId === currentUser.id && (
                   <div className="mb-6">

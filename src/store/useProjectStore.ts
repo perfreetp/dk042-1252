@@ -79,10 +79,12 @@ interface ProjectState {
   getPendingApprovals: (userId: string) => ProjectNode[];
   getNodeApprovalInfo: (projectId: string, nodeId: string, userId: string) => {
     canApprove: boolean;
-    nextApproverRole: string;
+    nextApproverRole: UserRole | null;
     currentStageLabel: string;
     completedStages: ApprovalStage[];
     pendingStages: ApprovalStage[];
+    currentApprovalRound: number;
+    previousRoundComment: string | null;
   };
   checkAndUpdateOverdue: () => void;
 }
@@ -297,15 +299,36 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const projects = state.projects.map((p) => {
         if (p.id !== projectId) return p;
         
-        let updatedNodes = [...p.nodes];
+        const updatedNodes = [...p.nodes];
         const nodeIdx = updatedNodes.findIndex(n => n.id === nodeId);
         if (nodeIdx < 0) return p;
-        
+
         const node = updatedNodes[nodeIdx];
+        if (!node || node.status !== 'pending_approval') {
+          console.warn('Node not pending approval');
+          return p;
+        }
+
+        if (!node.approvalStages || node.approvalStages.length === 0) {
+          console.warn('No approval stages configured');
+          return p;
+        }
+
         const currentStageIdx = node.approvalStages.findIndex(s => s.order === node.currentStageOrder);
-        if (currentStageIdx < 0) return p;
-        
+        if (currentStageIdx < 0) {
+          console.warn('Invalid current stage order');
+          return p;
+        }
         const currentStage = node.approvalStages[currentStageIdx];
+        if (currentStage.status !== 'pending') {
+          console.warn('Current stage is not pending, may have been processed already');
+          return p;
+        }
+
+        if (currentStage.role !== approverRole) {
+          console.warn(`Approver role ${approverRole} does not match required role ${currentStage.role}`);
+          return p;
+        }
         
         const approvalRecord: ApprovalRecord = {
           id: generateId(),
@@ -395,41 +418,67 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const projects = state.projects.map((p) => {
         if (p.id !== projectId) return p;
         
+        const updatedNodes = [...p.nodes];
+        const nodeIdx = updatedNodes.findIndex(n => n.id === nodeId);
+        if (nodeIdx < 0) return p;
+
+        const node = updatedNodes[nodeIdx];
+        if (!node || node.status !== 'pending_approval') {
+          console.warn('Node not pending approval');
+          return p;
+        }
+
+        if (!node.approvalStages || node.approvalStages.length === 0) {
+          console.warn('No approval stages configured');
+          return p;
+        }
+
+        const currentStageIdx = node.approvalStages.findIndex(s => s.order === node.currentStageOrder);
+        if (currentStageIdx < 0) {
+          console.warn('Invalid current stage order');
+          return p;
+        }
+        const currentStage = node.approvalStages[currentStageIdx];
+        if (currentStage.status !== 'pending') {
+          console.warn('Current stage is not pending, may have been processed already');
+          return p;
+        }
+
+        if (currentStage.role !== approverRole) {
+          console.warn(`Approver role ${approverRole} does not match required role ${currentStage.role}`);
+          return p;
+        }
+
+        const approvalRecord: ApprovalRecord = {
+          id: generateId(),
+          projectNodeId: nodeId,
+          approverId,
+          approverRole,
+          stageOrder: currentStage.order,
+          stageLabel: currentStage.label,
+          decision: 'rejected',
+          comment,
+          createdAt: getTodayISO(),
+        };
+        
+        const resetStages = node.approvalStages.map(s => ({
+          ...s,
+          status: 'pending' as const,
+          approverId: undefined,
+          completedAt: undefined,
+        }));
+        
+        updatedNodes[nodeIdx] = {
+          ...node,
+          status: 'rejected' as Status,
+          approvalStages: resetStages,
+          currentStageOrder: 0,
+          approvalHistory: [...node.approvalHistory, approvalRecord],
+        };
+        
         return {
           ...p,
-          nodes: p.nodes.map((n) => {
-            if (n.id !== nodeId) return n;
-            
-            const currentStageIdx = n.approvalStages.findIndex(s => s.order === n.currentStageOrder);
-            const currentStage = currentStageIdx >= 0 ? n.approvalStages[currentStageIdx] : null;
-            
-            const approvalRecord: ApprovalRecord = {
-              id: generateId(),
-              projectNodeId: nodeId,
-              approverId,
-              approverRole,
-              stageOrder: currentStage?.order || n.currentStageOrder,
-              stageLabel: currentStage?.label || '',
-              decision: 'rejected',
-              comment,
-              createdAt: getTodayISO(),
-            };
-            
-            const resetStages = n.approvalStages.map(s => ({
-              ...s,
-              status: 'pending' as const,
-              approverId: undefined,
-              completedAt: undefined,
-            }));
-            
-            return {
-              ...n,
-              status: 'rejected' as Status,
-              approvalStages: resetStages,
-              currentStageOrder: 0,
-              approvalHistory: [...n.approvalHistory, approvalRecord],
-            };
-          }),
+          nodes: updatedNodes,
         };
       });
 
@@ -582,10 +631,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   getNodeApprovalInfo: (projectId, nodeId, userId) => {
     const emptyResult = {
       canApprove: false,
-      nextApproverRole: '',
+      nextApproverRole: null as UserRole | null,
       currentStageLabel: '',
       completedStages: [] as ApprovalStage[],
       pendingStages: [] as ApprovalStage[],
+      currentApprovalRound: 1,
+      previousRoundComment: null as string | null,
     };
     
     const project = get().projects.find(p => p.id === projectId);
@@ -601,8 +652,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const completedStages = stages.filter(s => s.status === 'approved');
     const pendingStages = stages.filter(s => s.status === 'pending' || s.status === 'rejected');
     
+    const approvedCount = completedStages.length;
+    const currentApprovalRound = approvedCount + 1;
+    
+    let previousRoundComment: string | null = null;
+    if (node.approvalHistory.length > 0) {
+      const lastRecord = [...node.approvalHistory].sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )[0];
+      if (lastRecord && lastRecord.comment) {
+        previousRoundComment = lastRecord.comment;
+      }
+    }
+    
     let canApprove = false;
-    let nextApproverRole = '';
+    let nextApproverRole: UserRole | null = null;
     let currentStageLabel = '';
     
     if (node.status === 'pending_approval' && node.currentStageOrder > 0) {
@@ -622,6 +686,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       currentStageLabel,
       completedStages,
       pendingStages,
+      currentApprovalRound,
+      previousRoundComment,
     };
   },
   checkAndUpdateOverdue: () => {

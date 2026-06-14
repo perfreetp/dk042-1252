@@ -1,18 +1,22 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Filter, Calendar, Clock, Users, AlertTriangle, ChevronRight, List, BarChart3 } from 'lucide-react';
+import { Search, Filter, Calendar, Clock, Users, AlertTriangle, ChevronRight, List, BarChart3, Target } from 'lucide-react';
 import { useProjectStore, useUserStore, useExceptionStore } from '@/store';
 import { StatusBadge } from '@/components/StatusBadge';
 import { EmptyState } from '@/components/EmptyState';
-import { formatDate, daysBetween, getTodayISO, isOverdue, isAtRisk, getDateStatus } from '@/utils';
-import type { Status } from '@/types';
+import { formatDate, daysBetween, getTodayISO, getDateStatus, isProjectAtRisk, isProjectOverdue, isNodeRisky, isNodeOverdue } from '@/utils';
+import type { Status, ProjectNode } from '@/types';
 import { GanttView } from './GanttView';
+import { WorkloadWeekView } from './WorkloadWeekView';
 
-const statusFilters: { value: Status | 'all'; label: string }[] = [
+type FilterValue = Status | 'all' | 'risk' | 'overdue';
+
+const statusFilters: { value: FilterValue; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'pending', label: '待启动' },
   { value: 'in_progress', label: '进行中' },
-  { value: 'delayed', label: '已逾期' },
+  { value: 'overdue', label: '已逾期' },
+  { value: 'risk', label: '有风险' },
   { value: 'completed', label: '已完成' },
 ];
 
@@ -22,8 +26,8 @@ export const ProjectList = () => {
   const { currentUser, getUserById } = useUserStore();
   const { exceptions } = useExceptionStore();
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<Status | 'all'>('all');
-  type ViewMode = 'list' | 'gantt';
+  const [statusFilter, setStatusFilter] = useState<FilterValue>('all');
+  type ViewMode = 'list' | 'gantt' | 'workload';
   const [viewMode, setViewMode] = useState<ViewMode>('list' as ViewMode);
 
   useEffect(() => {
@@ -37,7 +41,16 @@ export const ProjectList = () => {
   const filteredProjects = myProjects.filter(project => {
     const matchesSearch = project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       project.clientName.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || project.status === statusFilter;
+    let matchesStatus = true;
+    if (statusFilter === 'all') {
+      matchesStatus = true;
+    } else if (statusFilter === 'overdue') {
+      matchesStatus = isProjectOverdue(project);
+    } else if (statusFilter === 'risk') {
+      matchesStatus = isProjectAtRisk(project) && !isProjectOverdue(project);
+    } else {
+      matchesStatus = project.status === statusFilter;
+    }
     return matchesSearch && matchesStatus;
   });
 
@@ -55,23 +68,23 @@ export const ProjectList = () => {
     return exceptions.filter(e => e.projectId === projectId && e.status !== 'resolved').length;
   };
 
-  const isProjectOverdue = (project: typeof projects[0]) => {
-    if (project.status === 'completed') return false;
-    if (isOverdue(project.endDate)) return true;
-    return project.nodes.some(n => n.status !== 'completed' && isOverdue(n.dueDate));
-  };
-
-  const isProjectAtRisk = (project: typeof projects[0]) => {
-    if (project.status === 'completed') return false;
-    return project.nodes.some(n => n.status !== 'completed' && isAtRisk(n.dueDate));
-  };
-
   const stats = {
     total: myProjects.length,
     inProgress: myProjects.filter(p => p.status === 'in_progress').length,
-    atRisk: myProjects.filter(p => isProjectAtRisk(p)).length,
+    atRisk: myProjects.filter(p => isProjectAtRisk(p) && !isProjectOverdue(p)).length,
     overdue: myProjects.filter(p => isProjectOverdue(p)).length,
     completed: myProjects.filter(p => p.status === 'completed').length,
+  };
+
+  const getFirstRiskNode = (project: typeof projects[0]): ProjectNode | undefined => {
+    return project.nodes.find(n => isNodeOverdue(n)) || project.nodes.find(n => isNodeRisky(n));
+  };
+
+  const handleRiskBadgeClick = (e: React.MouseEvent, project: typeof projects[0]) => {
+    e.stopPropagation();
+    const riskNode = getFirstRiskNode(project);
+    const nodeIdParam = riskNode ? `&nodeId=${riskNode.id}` : '';
+    navigate(`/projects/${project.id}?risk=1${nodeIdParam}`);
   };
 
   return (
@@ -86,8 +99,11 @@ export const ProjectList = () => {
       </div>
 
       <div className="p-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('all')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
                 <Users className="w-6 h-6 text-slate-600" />
@@ -98,7 +114,10 @@ export const ProjectList = () => {
               </div>
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('in_progress')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center">
                 <Clock className="w-6 h-6 text-amber-600" />
@@ -109,18 +128,38 @@ export const ProjectList = () => {
               </div>
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div
+            className="bg-orange-50 rounded-xl border border-orange-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('risk')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center">
                 <AlertTriangle className="w-6 h-6 text-orange-600" />
               </div>
               <div className="text-right">
-                <p className="text-3xl font-bold text-slate-800">{stats.atRisk}</p>
-                <p className="text-sm text-slate-500">有风险</p>
+                <p className="text-3xl font-bold text-orange-700">{stats.atRisk}</p>
+                <p className="text-sm text-orange-600">有风险</p>
               </div>
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('overdue')}
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6 text-red-600" />
+              </div>
+              <div className="text-right">
+                <p className="text-3xl font-bold text-slate-800">{stats.overdue}</p>
+                <p className="text-sm text-slate-500">已逾期</p>
+              </div>
+            </div>
+          </div>
+          <div
+            className="bg-white rounded-xl border border-slate-200 p-6 cursor-pointer hover:shadow-lg transition-all duration-300"
+            onClick={() => setStatusFilter('completed')}
+          >
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center">
                 <Calendar className="w-6 h-6 text-emerald-600" />
@@ -185,10 +224,23 @@ export const ProjectList = () => {
               <BarChart3 className="w-4 h-4" />
               甘特图
             </button>
+            <button
+              onClick={() => setViewMode('workload')}
+              className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                (viewMode as ViewMode) === 'workload'
+                  ? 'bg-white text-slate-800 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <Target className="w-4 h-4" />
+              周负载
+            </button>
           </div>
         </div>
 
-        {viewMode === 'gantt' ? (
+        {viewMode === 'workload' ? (
+          <WorkloadWeekView onViewChange={setViewMode} />
+        ) : viewMode === 'gantt' ? (
           <GanttView onViewChange={setViewMode} />
         ) : filteredProjects.length === 0 ? (
           <EmptyState
@@ -223,13 +275,19 @@ export const ProjectList = () => {
                         </h3>
                         <StatusBadge status={project.status} />
                         {projOverdue && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium">
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium cursor-pointer hover:bg-red-200 transition-colors"
+                            onClick={(e) => handleRiskBadgeClick(e, project)}
+                          >
                             <AlertTriangle className="w-3 h-3" />
                             项目已逾期
                           </span>
                         )}
                         {!projOverdue && projAtRisk && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-medium">
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-medium cursor-pointer hover:bg-orange-200 transition-colors"
+                            onClick={(e) => handleRiskBadgeClick(e, project)}
+                          >
                             <Clock className="w-3 h-3" />
                             项目有风险
                           </span>
