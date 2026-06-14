@@ -10,10 +10,25 @@ export type ExceptionStatus = 'open' | 'in_progress' | 'resolved';
 
 export type ApprovalDecision = 'approved' | 'rejected';
 
+export type ApprovalStageStatus = 'pending' | 'approved' | 'rejected' | 'skipped';
+
+export interface ApprovalStage {
+  id: string;
+  order: number;
+  role: UserRole;
+  label: string;
+  status: ApprovalStageStatus;
+  approverId?: string;
+  completedAt?: string;
+}
+
 export interface ApprovalRecord {
   id: string;
   projectNodeId: string;
   approverId: string;
+  approverRole: UserRole;
+  stageOrder: number;
+  stageLabel: string;
   decision: ApprovalDecision;
   comment: string;
   createdAt: string;
@@ -83,6 +98,8 @@ export interface ProjectNode {
   status: Status;
   assigneeId: string;
   approvalType: ApprovalType;
+  approvalStages: ApprovalStage[];
+  currentStageOrder: number;
   dueDate: string;
   actualStartDate?: string;
   actualEndDate?: string;
@@ -99,6 +116,7 @@ export interface Project {
   templateId: string;
   templateVersionId?: string;
   templateVersion?: string;
+  templateName?: string;
   name: string;
   clientName: string;
   status: Status;

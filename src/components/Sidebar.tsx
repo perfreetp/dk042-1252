@@ -4,11 +4,12 @@ import {
   GitBranch,
   FolderKanban,
   ListTodo,
+  FileCheck,
   AlertTriangle,
   BarChart3,
   Workflow,
 } from 'lucide-react';
-import { useUserStore } from '@/store';
+import { useUserStore, useProjectStore } from '@/store';
 import { roleLabels } from '@/utils';
 import { Avatar } from './Avatar';
 import type { UserRole } from '@/types';
@@ -40,6 +41,12 @@ const navItems: NavItem[] = [
     roles: ['admin', 'manager', 'executor'],
   },
   {
+    path: '/approvals',
+    icon: FileCheck,
+    label: '审批工作台',
+    roles: ['admin', 'manager'],
+  },
+  {
     path: '/exceptions',
     icon: AlertTriangle,
     label: '异常处理',
@@ -55,6 +62,9 @@ const navItems: NavItem[] = [
 
 export const Sidebar = () => {
   const { currentUser } = useUserStore();
+  const { getPendingApprovals } = useProjectStore();
+
+  const pendingApprovalsCount = getPendingApprovals(currentUser.id).length;
 
   const filteredNavItems = navItems.filter((item) =>
     item.roles.includes(currentUser.role)
@@ -78,15 +88,22 @@ export const Sidebar = () => {
             key={item.path}
             to={item.path}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
+              `flex items-center justify-between gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 ${
                 isActive
                   ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/20'
                   : 'text-slate-300 hover:bg-slate-700 hover:text-white'
               }`
             }
           >
-            <item.icon className="h-5 w-5" />
-            {item.label}
+            <div className="flex items-center gap-3 min-w-0">
+              <item.icon className="h-5 w-5 flex-shrink-0" />
+              <span className="truncate">{item.label}</span>
+            </div>
+            {item.path === '/approvals' && pendingApprovalsCount > 0 && (
+              <span className="flex-shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-violet-500 text-white text-[10px] font-bold shadow-md">
+                {pendingApprovalsCount > 99 ? '99+' : pendingApprovalsCount}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>

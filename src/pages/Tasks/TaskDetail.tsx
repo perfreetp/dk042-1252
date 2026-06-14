@@ -16,6 +16,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   History,
+  XCircle,
 } from 'lucide-react';
 import { useProjectStore, useUserStore, useExceptionStore, useTemplateStore } from '@/store';
 import { StatusBadge, NodeTypeBadge } from '@/components/StatusBadge';
@@ -31,16 +32,18 @@ import {
   getOverdueDays,
   getDaysUntilDue,
   isAtRisk,
+  getDateStatus,
   approvalTypeLabels,
   approvalDecisionLabels,
   approvalDecisionColors,
+  roleLabels,
 } from '@/utils';
 import type { ProjectNode } from '@/types';
 
 export const TaskDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { projects, startNode, completeNode, addDeliverable, addComment, submitForApproval, approveNode, rejectNodeWithApproval } = useProjectStore();
+  const { projects, startNode, completeNode, addDeliverable, addComment, submitForApproval, approveNodeMulti, rejectNodeMulti, getNodeApprovalInfo } = useProjectStore();
   const { getUserById, currentUser } = useUserStore();
   const { getTemplateById } = useTemplateStore();
   const { createException } = useExceptionStore();
@@ -106,13 +109,12 @@ export const TaskDetail = () => {
   };
 
   const isApprover = () => {
-    if (!task || task.approvalType === 'none') return false;
-    const userRole = currentUser.role;
-    if (task.approvalType === 'manager' && userRole === 'manager') return true;
-    if (task.approvalType === 'admin' && userRole === 'admin') return true;
-    if (task.approvalType === 'multi_level' && (userRole === 'manager' || userRole === 'admin')) return true;
-    return false;
+    if (!task || !project) return false;
+    const info = getNodeApprovalInfo(project.id, task.id, currentUser.id);
+    return info.canApprove;
   };
+
+  const stepCircleLabels = ['①', '②', '③', '④', '⑤'];
 
   const refreshTask = () => {
     if (id) {
@@ -148,14 +150,14 @@ export const TaskDetail = () => {
 
   const handleApproveNode = () => {
     if (!task || !project) return;
-    approveNode(project.id, task.id, currentUser.id, approvalComment);
+    approveNodeMulti(project.id, task.id, currentUser.id, currentUser.role, approvalComment);
     refreshTask();
     setApprovalComment('');
   };
 
   const handleRejectNodeWithApproval = () => {
     if (!task || !project) return;
-    rejectNodeWithApproval(project.id, task.id, currentUser.id, approvalComment);
+    rejectNodeMulti(project.id, task.id, currentUser.id, currentUser.role, approvalComment);
     refreshTask();
     setApprovalComment('');
   };
@@ -199,9 +201,8 @@ export const TaskDetail = () => {
 
   const today = getTodayISO();
   const daysLeft = daysBetween(today, task.dueDate);
-  const isOverdueTask = isOverdue(task.dueDate) && task.status !== 'completed';
-  const overdueDays = getOverdueDays(task.dueDate);
-  const daysUntilDue = getDaysUntilDue(task.dueDate);
+  const dateStatus = getDateStatus(task.dueDate, task.status);
+  const isOverdueTask = dateStatus.level === 'danger';
   const isAssignee = task.assigneeId === currentUser.id;
   const canStartTask = canStart();
   const canApprove = isApprover();
@@ -209,27 +210,12 @@ export const TaskDetail = () => {
   const taskApprovalType = templateNode?.approvalType || task.approvalType || 'none';
 
   const getDueDateDisplay = () => {
-    if (task.status === 'completed') return null;
-    if (isOverdueTask) {
-      return (
-        <span className="inline-flex items-center gap-1 text-red-600 font-bold">
-          <AlertTriangle className="w-4 h-4" />
-          已超期 {overdueDays} 天
-        </span>
-      );
-    }
-    if (isAtRisk(task.dueDate)) {
-      return (
-        <span className="inline-flex items-center gap-1 text-orange-600 font-medium">
-          <Clock className="w-4 h-4" />
-          还剩 {daysUntilDue} 天
-        </span>
-      );
-    }
+    if (dateStatus.level === 'completed') return null;
+    const Icon = dateStatus.level === 'danger' ? AlertTriangle : Clock;
     return (
-      <span className="inline-flex items-center gap-1 text-slate-500">
-        <Clock className="w-4 h-4" />
-        还剩 {daysUntilDue} 天
+      <span className={`inline-flex items-center gap-1 ${dateStatus.className}`}>
+        <Icon className="w-4 h-4" />
+        {dateStatus.label}
       </span>
     );
   };
@@ -264,40 +250,44 @@ export const TaskDetail = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-8 text-sm flex-wrap">
-          <div className="flex items-center gap-2 text-slate-500">
-            <Calendar className="w-4 h-4" />
-            <span>截止日期: {formatDate(task.dueDate)}</span>
+        <div className="flex items-center justify-between gap-8 text-sm flex-wrap">
+          <div className="flex items-center gap-8 flex-wrap">
+            <div className="flex items-center gap-2 text-slate-500">
+              <Calendar className="w-4 h-4" />
+              <span>截止日期: {formatDate(task.dueDate)}</span>
+            </div>
+            {assignee && (
+              <div className="flex items-center gap-2 text-slate-500">
+                <User className="w-4 h-4" />
+                <span>负责人: {assignee.name}</span>
+              </div>
+            )}
           </div>
           {dueDateDisplay && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 ml-auto">
               {dueDateDisplay}
             </div>
           )}
-          {assignee && (
-            <div className="flex items-center gap-2 text-slate-500">
-              <User className="w-4 h-4" />
-              <span>负责人: {assignee.name}</span>
-            </div>
-          )}
-          {task.submittedAt && (
-            <div className="flex items-center gap-2 text-slate-500">
-              <Send className="w-4 h-4" />
-              <span>提交时间: {formatDateTime(task.submittedAt)}</span>
-            </div>
-          )}
-          {task.actualStartDate && (
-            <div className="flex items-center gap-2 text-slate-500">
-              <Play className="w-4 h-4" />
-              <span>开始时间: {formatDate(task.actualStartDate)}</span>
-            </div>
-          )}
-          {task.actualEndDate && (
-            <div className="flex items-center gap-2 text-slate-500">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>完成时间: {formatDate(task.actualEndDate)}</span>
-            </div>
-          )}
+          <div className="flex items-center gap-8 flex-wrap">
+            {task.submittedAt && (
+              <div className="flex items-center gap-2 text-slate-500">
+                <Send className="w-4 h-4" />
+                <span>提交时间: {formatDateTime(task.submittedAt)}</span>
+              </div>
+            )}
+            {task.actualStartDate && (
+              <div className="flex items-center gap-2 text-slate-500">
+                <Play className="w-4 h-4" />
+                <span>开始时间: {formatDate(task.actualStartDate)}</span>
+              </div>
+            )}
+            {task.actualEndDate && (
+              <div className="flex items-center gap-2 text-slate-500">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>完成时间: {formatDate(task.actualEndDate)}</span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -331,9 +321,7 @@ export const TaskDetail = () => {
                 <div className="space-y-2">
                   {templateNode?.requiredMaterials.map((material, idx) => (
                     <div key={idx} className="flex items-center gap-2 text-sm text-slate-600">
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center ${
-                        task.deliverables.length > 0 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'
-                      }`}>
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center ${task.deliverables.length > 0 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
                         {task.deliverables.length > 0 ? <CheckCircle2 className="w-3 h-3" /> : <span className="text-xs">{idx + 1}</span>}
                       </div>
                       {material}
@@ -359,6 +347,106 @@ export const TaskDetail = () => {
                 </div>
               )}
             </div>
+
+            {(task.status === 'pending_approval' || task.approvalHistory.length > 0) && task.approvalStages.length > 0 && (
+              <div className="bg-white rounded-xl border border-slate-200 p-6">
+                <h2 className="text-lg font-semibold text-slate-800 mb-5 flex items-center gap-2">
+                  <History className="w-5 h-5 text-violet-600" />
+                  审批进度
+                </h2>
+                <div className="flex items-start justify-between mb-6">
+                  {task.approvalStages.map((stage, idx) => {
+                    const isCompleted = stage.status === 'approved';
+                    const isCurrent = task.status === 'pending_approval' && stage.order === task.currentStageOrder && stage.status === 'pending';
+                    const isPending = stage.status === 'pending' && !isCurrent;
+                    const stageApprover = stage.approverId ? getUserById(stage.approverId) : null;
+                    const relatedRecord = task.approvalHistory.find(r => r.stageOrder === stage.order && r.decision === 'approved');
+                    return (
+                      <div key={stage.id} className="flex-1 flex flex-col items-center relative">
+                        {idx < task.approvalStages.length - 1 && (
+                          <div
+                            className={`absolute top-6 left-1/2 w-full h-1 rounded-full ${isCompleted ? 'bg-emerald-400' : 'bg-slate-200'}`}
+                          />
+                        )}
+                        <div
+                          className={`relative z-10 w-12 h-12 rounded-full flex items-center justify-center text-sm font-bold transition-all shadow-md ${isCompleted ? 'bg-emerald-500 text-white' : ''} ${isCurrent ? 'bg-violet-500 text-white ring-4 ring-violet-200 animate-pulse' : ''} ${isPending ? 'bg-slate-200 text-slate-500' : ''} ${stage.status === 'rejected' ? 'bg-red-500 text-white' : ''}`}
+                        >
+                          {isCompleted ? (
+                            <CheckCircle2 className="w-6 h-6" />
+                          ) : (
+                            <span>{stepCircleLabels[idx]}</span>
+                          )}
+                        </div>
+                        <div className="mt-3 text-center w-full px-2">
+                          <div className={`text-sm font-semibold mb-1 ${isCurrent ? 'text-violet-700' : isCompleted ? 'text-emerald-700' : 'text-slate-600'}`}>
+                            {stage.label}
+                          </div>
+                          {stageApprover && (
+                            <div className="flex items-center justify-center gap-1 text-xs text-slate-500 mb-1">
+                              <Avatar src={stageApprover.avatar} alt={stageApprover.name} size="sm" />
+                              <span>{stageApprover.name}</span>
+                            </div>
+                          )}
+                          {isCurrent && !stageApprover && (
+                            <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-xs font-medium mt-1">
+                              <Clock className="w-3 h-3" />
+                              待处理
+                            </div>
+                          )}
+                          {relatedRecord?.comment && (
+                            <div className="text-xs text-slate-500 mt-1 bg-slate-50 rounded-lg p-2 border border-slate-100">
+                              意见：{relatedRecord.comment.length > 20 ? relatedRecord.comment.slice(0, 20) + '...' : relatedRecord.comment}
+                            </div>
+                          )}
+                          {stage.completedAt && (
+                            <div className="text-xs text-slate-400 mt-1">
+                              {formatDate(stage.completedAt)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {task.status === 'pending_approval' && task.currentStageOrder > 0 && (
+                  <div className="mt-4 p-4 bg-violet-50 rounded-xl border border-violet-100">
+                    <div className="flex items-center gap-4">
+                      {(() => {
+                        const currentStage = task.approvalStages.find(s => s.order === task.currentStageOrder);
+                        const approverInfo = currentStage?.approverId ? getUserById(currentStage.approverId) : null;
+                        return (
+                          <>
+                            {approverInfo ? (
+                              <Avatar src={approverInfo.avatar} alt={approverInfo.name} size="lg" />
+                            ) : (
+                              <div className="w-14 h-14 rounded-full bg-violet-200 flex items-center justify-center text-violet-700 font-bold text-lg">
+                                {roleLabels[currentStage?.role || 'manager'].charAt(0)}
+                              </div>
+                            )}
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-semibold text-slate-800">
+                                  {approverInfo?.name || roleLabels[currentStage?.role || 'manager']}
+                                </span>
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-xs font-medium">
+                                  <Clock className="w-3 h-3" />
+                                  待处理
+                                </span>
+                              </div>
+                              <div className="text-sm text-slate-500">
+                                {currentStage?.label}
+                                {task.approvalStages.length > 1 && `（第 ${task.currentStageOrder} / ${task.approvalStages.length} 级审批）`}
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="bg-white rounded-xl border border-slate-200 p-6">
               <div className="flex items-center justify-between mb-4">
@@ -419,21 +507,33 @@ export const TaskDetail = () => {
                   <p className="text-sm text-slate-400">暂无审批记录</p>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {task.approvalHistory.map((record) => {
+                <div className="relative pl-2">
+                  {task.approvalHistory.map((record, idx) => {
                     const approver = getUserById(record.approverId);
+                    const isLast = idx === task.approvalHistory.length - 1;
                     return (
-                      <div key={record.id} className="border border-slate-200 rounded-lg p-4 bg-slate-50">
-                        <div className="flex items-start gap-3">
-                          {approver && <Avatar src={approver.avatar} alt={approver.name} size="md" />}
-                          <div className="flex-1">
+                      <div key={record.id} className="relative flex gap-4 pb-6">
+                        {!isLast && (
+                          <div className="absolute left-[15px] top-8 bottom-0 w-0.5 bg-slate-200" />
+                        )}
+                        <div className="relative z-10 flex-shrink-0">
+                          <div
+                            className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shadow-sm ${record.decision === 'approved' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}`}
+                          >
+                            {stepCircleLabels[(record.stageOrder || idx + 1) - 1] || stepCircleLabels[idx] || '①'}
+                          </div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className={`rounded-xl border p-4 ${record.decision === 'approved' ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
+                            {record.stageLabel && (
+                              <div className="text-xs font-semibold text-slate-600 mb-2">
+                                {record.stageLabel}
+                              </div>
+                            )}
                             <div className="flex items-center gap-2 mb-2 flex-wrap">
-                              <span className="text-sm font-medium text-slate-700">{approver?.name}</span>
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                                record.decision === 'approved'
-                                  ? 'bg-emerald-100 text-emerald-700'
-                                  : 'bg-red-100 text-red-700'
-                              }`}>
+                              {approver && <Avatar src={approver.avatar} alt={approver.name} size="sm" />}
+                              <span className="text-sm font-medium text-slate-700">{approver?.name || '未知审批人'}</span>
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${record.decision === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
                                 {record.decision === 'approved' ? (
                                   <ThumbsUp className="w-3 h-3 mr-1" />
                                 ) : (
@@ -444,9 +544,17 @@ export const TaskDetail = () => {
                               <span className="text-xs text-slate-400">{formatDateTime(record.createdAt)}</span>
                             </div>
                             {record.comment && (
-                              <p className="text-sm text-slate-600 bg-white p-3 rounded-lg border border-slate-200">
+                              <p className="text-sm text-slate-700 bg-white p-3 rounded-lg border border-slate-200 mt-3">
                                 {record.comment}
                               </p>
+                            )}
+                            {record.decision === 'rejected' && (
+                              <div className="mt-3 pt-3 border-t border-slate-200/60">
+                                <div className="text-xs text-orange-600 bg-orange-50 rounded-lg p-2">
+                                  <AlertTriangle className="w-3 h-3 inline mr-1" />
+                                  重新提交将从头开始审批
+                                </div>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -524,7 +632,7 @@ export const TaskDetail = () => {
                 </div>
               )}
 
-              {(task.status === 'in_progress' || task.status === 'rejected' || task.status === 'delayed') && isAssignee && (
+              {(task.status === 'in_progress' || task.status === 'delayed') && isAssignee && (
                 <>
                   <button
                     onClick={() => setShowUploadModal(true)}
@@ -553,16 +661,52 @@ export const TaskDetail = () => {
                 </>
               )}
 
+              {task.status === 'rejected' && isAssignee && (
+                <>
+                  <div className="p-3 bg-orange-50 border border-orange-200 rounded-lg mb-3">
+                    <p className="text-xs text-orange-700">
+                      <AlertTriangle className="w-4 h-4 inline mr-1" />
+                      此任务已被退回，请修正内容后重新提交
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setShowUploadModal(true)}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-lg transition-colors mb-3"
+                  >
+                    <Upload className="w-5 h-5" />
+                    上传交付物
+                  </button>
+                  <button
+                    onClick={handleSubmitForApproval}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-violet-600 hover:bg-violet-700 text-white font-semibold rounded-lg transition-all mb-3 shadow-md"
+                  >
+                    <Send className="w-5 h-5" />
+                    修正内容后重新提交
+                  </button>
+                </>
+              )}
+
               {task.status === 'pending_approval' && canApprove && (
                 <>
+                  {task.approvalStages.length > 1 && task.currentStageOrder > 0 && (
+                    <div className="p-3 bg-violet-50 border border-violet-200 rounded-lg mb-3">
+                      <p className="text-xs text-violet-700">
+                        这是第 {task.currentStageOrder} / {task.approvalStages.length} 级审批
+                        （{task.approvalStages.find(s => s.order === task.currentStageOrder)?.label || ''}）
+                        {task.currentStageOrder < task.approvalStages.length &&
+                          `，通过后将进入${task.approvalStages.find(s => s.order === task.currentStageOrder + 1)?.label || '管理员终审'}`
+                        }
+                      </p>
+                    </div>
+                  )}
                   <div className="mb-3">
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">审批意见</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">审批意见（选填）</label>
                     <textarea
                       value={approvalComment}
                       onChange={(e) => setApprovalComment(e.target.value)}
                       placeholder="请输入审批意见..."
                       rows={3}
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none transition-all resize-none"
+                      className="w-full px-4 py-2.5 border border-violet-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none bg-white"
                     />
                   </div>
                   <button
@@ -583,9 +727,19 @@ export const TaskDetail = () => {
               )}
 
               {task.status === 'pending_approval' && !canApprove && (
-                <div className="p-4 bg-violet-50 rounded-lg text-center mb-3">
-                  <Clock className="w-6 h-6 text-violet-500 mx-auto mb-2" />
-                  <p className="text-sm text-violet-600 font-medium">等待审批中...</p>
+                <div className="p-4 bg-slate-50 rounded-lg text-center mb-3 border border-slate-200">
+                  <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                  <p className="text-sm text-slate-600 font-medium">
+                    等待 {(() => {
+                      const info = project ? getNodeApprovalInfo(project.id, task.id, currentUser.id) : null;
+                      const stage = task.approvalStages.find(s => s.order === task.currentStageOrder);
+                      if (stage?.approverId) {
+                        const u = getUserById(stage.approverId);
+                        return u?.name || roleLabels[stage.role];
+                      }
+                      return info?.nextApproverRole ? roleLabels[info.nextApproverRole as keyof typeof roleLabels] || info.nextApproverRole : '审批人';
+                    })()} 审批
+                  </p>
                 </div>
               )}
 

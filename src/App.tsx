@@ -6,6 +6,7 @@ import { ProjectList } from '@/pages/Projects/ProjectList';
 import { ProjectDetail } from '@/pages/Projects/ProjectDetail';
 import { TaskList } from '@/pages/Tasks/TaskList';
 import { TaskDetail } from '@/pages/Tasks/TaskDetail';
+import { ApprovalsPage } from '@/pages/Approvals/ApprovalsPage';
 import { ExceptionList } from '@/pages/Exceptions/ExceptionList';
 import { NewException } from '@/pages/Exceptions/NewException';
 import { ReportsPage } from '@/pages/Reports/ReportsPage';
@@ -23,6 +24,7 @@ export default function App() {
           <Route path="/projects/:id" element={<ProjectDetail />} />
           <Route path="/tasks" element={<TaskList />} />
           <Route path="/tasks/:id" element={<TaskDetail />} />
+          <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="/exceptions" element={<ExceptionList />} />
           <Route path="/exceptions/new" element={<NewException />} />
           <Route path="/reports" element={<ReportsPage />} />

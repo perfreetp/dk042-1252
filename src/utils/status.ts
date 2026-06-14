@@ -1,4 +1,4 @@
-import type { Status, ExceptionStatus, NodeType, UserRole, ApprovalType, ApprovalDecision } from '@/types';
+import type { Status, ExceptionStatus, NodeType, UserRole, ApprovalType, ApprovalDecision, ApprovalStageStatus } from '@/types';
 
 export const statusLabels: Record<Status, string> = {
   pending: '待处理',
@@ -35,6 +35,20 @@ export const approvalDecisionLabels: Record<ApprovalDecision, string> = {
 export const approvalDecisionColors: Record<ApprovalDecision, string> = {
   approved: 'text-emerald-600',
   rejected: 'text-red-600',
+};
+
+export const approvalStageStatusLabels: Record<ApprovalStageStatus, string> = {
+  pending: '待处理',
+  approved: '已通过',
+  rejected: '已退回',
+  skipped: '已跳过',
+};
+
+export const approvalStageStatusColors: Record<ApprovalStageStatus, string> = {
+  pending: 'bg-slate-200 text-slate-600',
+  approved: 'bg-emerald-100 text-emerald-700',
+  rejected: 'bg-red-100 text-red-700',
+  skipped: 'bg-slate-100 text-slate-500',
 };
 
 export const exceptionStatusLabels: Record<ExceptionStatus, string> = {

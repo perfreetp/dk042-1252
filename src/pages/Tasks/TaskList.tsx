@@ -4,7 +4,7 @@ import { Search, Filter, Calendar, Clock, AlertTriangle, CheckCircle, ChevronRig
 import { useProjectStore, useUserStore } from '@/store';
 import { StatusBadge, NodeTypeBadge } from '@/components/StatusBadge';
 import { EmptyState } from '@/components/EmptyState';
-import { formatDate, daysBetween, getTodayISO, isOverdue, getOverdueDays, getDaysUntilDue, isAtRisk } from '@/utils';
+import { formatDate, daysBetween, getTodayISO, isOverdue, getOverdueDays, getDaysUntilDue, isAtRisk, getDateStatus } from '@/utils';
 import type { Status, ProjectNode } from '@/types';
 
 const statusFilters: { value: Status | 'all'; label: string }[] = [
@@ -73,7 +73,8 @@ export const TaskList = () => {
     pending: allTasks.filter(t => t.status === 'pending').length,
     inProgress: allTasks.filter(t => t.status === 'in_progress').length,
     pendingApproval: allTasks.filter(t => t.status === 'pending_approval').length,
-    delayed: allTasks.filter(t => t.status === 'delayed' || (t.status === 'in_progress' && isOverdue(t.dueDate))).length,
+    atRisk: allTasks.filter(t => t.status !== 'completed' && isAtRisk(t.dueDate)).length,
+    overdue: allTasks.filter(t => t.status !== 'completed' && isOverdue(t.dueDate)).length,
   };
 
   const getPrerequisiteStatus = (task: TaskWithProject) => {
@@ -89,31 +90,13 @@ export const TaskList = () => {
   };
 
   const getDueDateDisplay = (task: TaskWithProject) => {
-    if (task.status === 'completed') return null;
-    const overdueDays = getOverdueDays(task.dueDate);
-    const daysUntilDue = getDaysUntilDue(task.dueDate);
-    const isOverdueTask = isOverdue(task.dueDate);
-    
-    if (isOverdueTask) {
-      return (
-        <span className="inline-flex items-center gap-1 text-red-600 font-bold">
-          <AlertTriangle className="w-4 h-4" />
-          已超期 {overdueDays} 天
-        </span>
-      );
-    }
-    if (isAtRisk(task.dueDate)) {
-      return (
-        <span className="inline-flex items-center gap-1 text-orange-600 font-medium">
-          <Clock className="w-4 h-4" />
-          还剩 {daysUntilDue} 天
-        </span>
-      );
-    }
+    const ds = getDateStatus(task.dueDate, task.status);
+    if (ds.level === 'completed') return null;
+    const Icon = ds.level === 'danger' ? AlertTriangle : Clock;
     return (
-      <span className="inline-flex items-center gap-1 text-slate-500">
-        <Clock className="w-4 h-4" />
-        还剩 {daysUntilDue} 天
+      <span className={`inline-flex items-center gap-1 ${ds.className}`}>
+        <Icon className="w-4 h-4" />
+        {ds.label}
       </span>
     );
   };
@@ -177,11 +160,11 @@ export const TaskList = () => {
           </div>
           <div className="bg-white rounded-xl border border-slate-200 p-6">
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center">
-                <AlertTriangle className="w-6 h-6 text-red-600" />
+              <div className="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6 text-orange-600" />
               </div>
               <div className="text-right">
-                <p className="text-3xl font-bold text-slate-800">{stats.delayed}</p>
+                <p className="text-3xl font-bold text-slate-800">{stats.atRisk}</p>
                 <p className="text-sm text-slate-500">有风险</p>
               </div>
             </div>
@@ -233,6 +216,7 @@ export const TaskList = () => {
               const daysLeft = daysBetween(today, task.dueDate);
               const prereqStatus = getPrerequisiteStatus(task);
               const isOverdueTask = isOverdue(task.dueDate) && task.status !== 'completed';
+              const isAtRiskTask = isAtRisk(task.dueDate) && task.status !== 'completed';
               const dueDateDisplay = getDueDateDisplay(task);
               const isApprovalTask = task.assigneeId !== currentUser.id;
 
@@ -262,7 +246,13 @@ export const TaskList = () => {
                             已逾期
                           </span>
                         )}
-                        {prereqStatus === 'blocked' && !isOverdueTask && (
+                        {!isOverdueTask && isAtRiskTask && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-medium">
+                            <Clock className="w-3 h-3" />
+                            有风险
+                          </span>
+                        )}
+                        {prereqStatus === 'blocked' && !isAtRiskTask && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-medium">
                             <Clock className="w-3 h-3" />
                             等待前置任务

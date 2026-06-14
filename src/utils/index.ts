@@ -1,8 +1,22 @@
 export { generateId } from './id';
-export { formatDate, formatDateTime, addDays, daysBetween, isOverdue, getTodayISO, getOverdueDays, getDaysUntilDue, isAtRisk } from './date';
+export {
+  formatDate,
+  formatDateTime,
+  addDays,
+  daysBetween,
+  isOverdue,
+  getTodayISO,
+  getOverdueDays,
+  getDaysUntilDue,
+  isAtRisk,
+  getDateStatus,
+  formatDurationText,
+  getDateRange,
+} from './date';
 export {
   statusLabels,
   statusColors,
+  statusBorderColors,
   exceptionStatusLabels,
   exceptionStatusColors,
   nodeTypeLabels,
@@ -12,4 +26,6 @@ export {
   approvalTypeLabels,
   approvalDecisionLabels,
   approvalDecisionColors,
+  approvalStageStatusLabels,
+  approvalStageStatusColors,
 } from './status';

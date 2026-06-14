@@ -4,7 +4,7 @@ import { Search, Filter, Calendar, Clock, Users, AlertTriangle, ChevronRight, Li
 import { useProjectStore, useUserStore, useExceptionStore } from '@/store';
 import { StatusBadge } from '@/components/StatusBadge';
 import { EmptyState } from '@/components/EmptyState';
-import { formatDate, daysBetween, getTodayISO } from '@/utils';
+import { formatDate, daysBetween, getTodayISO, isOverdue, isAtRisk, getDateStatus } from '@/utils';
 import type { Status } from '@/types';
 import { GanttView } from './GanttView';
 
@@ -55,10 +55,22 @@ export const ProjectList = () => {
     return exceptions.filter(e => e.projectId === projectId && e.status !== 'resolved').length;
   };
 
+  const isProjectOverdue = (project: typeof projects[0]) => {
+    if (project.status === 'completed') return false;
+    if (isOverdue(project.endDate)) return true;
+    return project.nodes.some(n => n.status !== 'completed' && isOverdue(n.dueDate));
+  };
+
+  const isProjectAtRisk = (project: typeof projects[0]) => {
+    if (project.status === 'completed') return false;
+    return project.nodes.some(n => n.status !== 'completed' && isAtRisk(n.dueDate));
+  };
+
   const stats = {
     total: myProjects.length,
     inProgress: myProjects.filter(p => p.status === 'in_progress').length,
-    delayed: myProjects.filter(p => p.status === 'delayed' || p.nodes.some(n => n.status === 'delayed')).length,
+    atRisk: myProjects.filter(p => isProjectAtRisk(p)).length,
+    overdue: myProjects.filter(p => isProjectOverdue(p)).length,
     completed: myProjects.filter(p => p.status === 'completed').length,
   };
 
@@ -99,11 +111,11 @@ export const ProjectList = () => {
           </div>
           <div className="bg-white rounded-xl border border-slate-200 p-6">
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center">
-                <AlertTriangle className="w-6 h-6 text-red-600" />
+              <div className="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6 text-orange-600" />
               </div>
               <div className="text-right">
-                <p className="text-3xl font-bold text-slate-800">{stats.delayed}</p>
+                <p className="text-3xl font-bold text-slate-800">{stats.atRisk}</p>
                 <p className="text-sm text-slate-500">有风险</p>
               </div>
             </div>
@@ -193,6 +205,9 @@ export const ProjectList = () => {
               const exceptionCount = getExceptionCount(project.id);
               const today = getTodayISO();
               const daysLeft = daysBetween(today, project.endDate);
+              const projOverdue = isProjectOverdue(project);
+              const projAtRisk = isProjectAtRisk(project);
+              const endDateStatus = getDateStatus(project.endDate, project.status);
 
               return (
                 <div
@@ -202,19 +217,25 @@ export const ProjectList = () => {
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
+                      <div className="flex items-center gap-3 mb-2 flex-wrap">
                         <h3 className="text-lg font-semibold text-slate-800 group-hover:text-amber-600 transition-colors">
                           {project.name}
                         </h3>
                         <StatusBadge status={project.status} />
-                        {delayedCount > 0 && (
+                        {projOverdue && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium">
                             <AlertTriangle className="w-3 h-3" />
-                            {delayedCount} 个节点逾期
+                            项目已逾期
+                          </span>
+                        )}
+                        {!projOverdue && projAtRisk && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-medium">
+                            <Clock className="w-3 h-3" />
+                            项目有风险
                           </span>
                         )}
                         {exceptionCount > 0 && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs font-medium">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
                             <AlertTriangle className="w-3 h-3" />
                             {exceptionCount} 个异常
                           </span>
@@ -222,17 +243,22 @@ export const ProjectList = () => {
                       </div>
                       <p className="text-slate-500 mb-4">{project.clientName}</p>
 
-                      <div className="flex items-center gap-6 text-sm">
+                      <div className="flex items-center gap-6 text-sm flex-wrap">
                         <div className="flex items-center gap-2 text-slate-500">
                           <Calendar className="w-4 h-4" />
                           <span>{formatDate(project.startDate)} - {formatDate(project.endDate)}</span>
                         </div>
-                        {project.status !== 'completed' && (
-                          <div className="flex items-center gap-2 text-slate-500">
-                            <Clock className="w-4 h-4" />
-                            <span className={daysLeft < 3 ? 'text-red-600 font-medium' : ''}>
-                              {daysLeft > 0 ? `剩余 ${daysLeft} 天` : daysLeft === 0 ? '今天截止' : `已超期 ${Math.abs(daysLeft)} 天`}
-                            </span>
+                        {endDateStatus.level !== 'completed' && (
+                          <div className="flex items-center gap-2">
+                            {(() => {
+                              const Icon = endDateStatus.level === 'danger' ? AlertTriangle : Clock;
+                              return (
+                                <span className={`inline-flex items-center gap-1 ${endDateStatus.className}`}>
+                                  <Icon className="w-4 h-4" />
+                                  {endDateStatus.label}
+                                </span>
+                              );
+                            })()}
                           </div>
                         )}
                         {manager && (
