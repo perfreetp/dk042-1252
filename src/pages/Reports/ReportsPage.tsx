@@ -112,6 +112,7 @@ export const ReportsPage = () => {
     const statusCount: Record<Status, number> = {
       pending: 0,
       in_progress: 0,
+      pending_approval: 0,
       completed: 0,
       delayed: 0,
       rejected: 0,

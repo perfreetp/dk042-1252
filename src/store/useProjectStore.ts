@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Project, ProjectNode, Status, Deliverable, Comment } from '@/types';
+import type { Project, ProjectNode, Status, Deliverable, Comment, ApprovalRecord, ApprovalDecision } from '@/types';
 import { mockProjects } from '@/data/mockData';
 import { generateId, getTodayISO, addDays, isOverdue } from '@/utils';
 import { useTemplateStore } from './useTemplateStore';
@@ -12,6 +12,7 @@ interface ProjectState {
   getProjectById: (id: string) => Project | undefined;
   createProject: (data: {
     templateId: string;
+    templateVersionId?: string;
     name: string;
     clientName: string;
     startDate: string;
@@ -20,12 +21,16 @@ interface ProjectState {
   updateProjectStatus: (id: string, status: Status) => void;
   updateNodeStatus: (projectId: string, nodeId: string, status: Status) => void;
   startNode: (projectId: string, nodeId: string) => void;
+  submitForApproval: (projectId: string, nodeId: string) => void;
+  approveNode: (projectId: string, nodeId: string, approverId: string, comment: string) => void;
+  rejectNodeWithApproval: (projectId: string, nodeId: string, approverId: string, comment: string) => void;
   completeNode: (projectId: string, nodeId: string) => void;
   rejectNode: (projectId: string, nodeId: string) => void;
   addDeliverable: (projectId: string, nodeId: string, data: { name: string; url: string; uploadedBy: string }) => void;
   addComment: (projectId: string, nodeId: string, data: { content: string; userId: string }) => void;
   getMyProjects: (userId: string) => Project[];
   getMyTasks: (userId: string) => ProjectNode[];
+  getPendingApprovals: (userId: string) => ProjectNode[];
   checkAndUpdateOverdue: () => void;
 }
 
@@ -35,7 +40,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setSelectedProject: (project) => set({ selectedProject: project }),
   getProjectById: (id) => get().projects.find(p => p.id === id),
   createProject: (data) => {
-    const template = useTemplateStore.getState().getTemplateById(data.templateId);
+    const templateState = useTemplateStore.getState();
+    let template = templateState.getTemplateById(data.templateId);
+    
+    if (data.templateVersionId && template) {
+      const version = template.versions.find(v => v.id === data.templateVersionId);
+      if (version) {
+        template = {
+          ...template,
+          nodes: version.nodes,
+          name: version.name,
+          description: version.description,
+        };
+      }
+    }
+    
     if (!template) throw new Error('Template not found');
 
     const executorUsers = useUserStore.getState().getUsersByRole('executor');
@@ -62,11 +81,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         type: node.type,
         status: index === 0 ? 'pending' : 'pending',
         assigneeId,
+        approvalType: node.approvalType,
         dueDate: addDays(data.startDate, index * 5),
         prerequisites,
         requiredMaterials: node.requiredMaterials,
         deliverables: [],
         comments: [],
+        approvalHistory: [],
       };
     });
 
@@ -92,6 +113,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const newProject: Project = {
       id: generateId(),
       templateId: data.templateId,
+      templateVersionId: data.templateVersionId,
+      templateVersion: data.templateVersionId
+        ? template.versions.find(v => v.id === data.templateVersionId)?.version
+        : template.version,
       name: data.name,
       clientName: data.clientName,
       status: 'pending',
@@ -141,6 +166,152 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           : p
       ),
     }));
+  },
+  submitForApproval: (projectId, nodeId) => {
+    set((state) => {
+      const projects = state.projects.map((p) => {
+        if (p.id !== projectId) return p;
+        return {
+          ...p,
+          nodes: p.nodes.map((n) => {
+            if (n.id !== nodeId) return n;
+            if (n.approvalType === 'none') {
+              return {
+                ...n,
+                status: 'completed' as Status,
+                actualEndDate: getTodayISO(),
+                submittedAt: getTodayISO(),
+              };
+            }
+            return {
+              ...n,
+              status: 'pending_approval' as Status,
+              submittedAt: getTodayISO(),
+            };
+          }),
+        };
+      });
+      
+      const project = projects.find(p => p.id === projectId);
+      const node = project?.nodes.find(n => n.id === nodeId);
+      
+      if (node && node.approvalType === 'none') {
+        const updatedNodes = project!.nodes;
+        const nextNodes = updatedNodes.filter(n =>
+          n.status === 'pending' && n.prerequisites.includes(nodeId)
+        );
+
+        nextNodes.forEach(nextNode => {
+          const allPrereqsMet = nextNode.prerequisites.every(preId =>
+            updatedNodes.find(n => n.id === preId)?.status === 'completed'
+          );
+          if (allPrereqsMet) {
+            const idx = updatedNodes.findIndex(n => n.id === nextNode.id);
+            if (idx >= 0) {
+              updatedNodes[idx] = { ...updatedNodes[idx], status: 'pending' };
+            }
+          }
+        });
+
+        const allCompleted = updatedNodes.every(n => n.status === 'completed');
+        const projectIdx = projects.findIndex(p => p.id === projectId);
+        if (projectIdx >= 0) {
+          projects[projectIdx] = {
+            ...projects[projectIdx],
+            nodes: updatedNodes,
+            status: allCompleted ? 'completed' : projects[projectIdx].status,
+            actualEndDate: allCompleted ? getTodayISO() : projects[projectIdx].actualEndDate,
+          };
+        }
+      }
+      
+      return { projects };
+    });
+  },
+  approveNode: (projectId, nodeId, approverId, comment) => {
+    set((state) => {
+      const projects = state.projects.map((p) => {
+        if (p.id !== projectId) return p;
+        
+        const updatedNodes = p.nodes.map((n) => {
+          if (n.id !== nodeId) return n;
+          
+          const approvalRecord: ApprovalRecord = {
+            id: generateId(),
+            projectNodeId: nodeId,
+            approverId,
+            decision: 'approved',
+            comment,
+            createdAt: getTodayISO(),
+          };
+          
+          return {
+            ...n,
+            status: 'completed' as Status,
+            actualEndDate: getTodayISO(),
+            approvalHistory: [...n.approvalHistory, approvalRecord],
+          };
+        });
+
+        const nextNodes = updatedNodes.filter(n =>
+          n.status === 'pending' && n.prerequisites.includes(nodeId)
+        );
+
+        nextNodes.forEach(nextNode => {
+          const allPrereqsMet = nextNode.prerequisites.every(preId =>
+            updatedNodes.find(n => n.id === preId)?.status === 'completed'
+          );
+          if (allPrereqsMet) {
+            const idx = updatedNodes.findIndex(n => n.id === nextNode.id);
+            if (idx >= 0) {
+              updatedNodes[idx] = { ...updatedNodes[idx], status: 'pending' };
+            }
+          }
+        });
+
+        const allCompleted = updatedNodes.every(n => n.status === 'completed');
+
+        return {
+          ...p,
+          nodes: updatedNodes,
+          status: allCompleted ? 'completed' : p.status,
+          actualEndDate: allCompleted ? getTodayISO() : p.actualEndDate,
+        };
+      });
+
+      return { projects };
+    });
+  },
+  rejectNodeWithApproval: (projectId, nodeId, approverId, comment) => {
+    set((state) => {
+      const projects = state.projects.map((p) => {
+        if (p.id !== projectId) return p;
+        
+        return {
+          ...p,
+          nodes: p.nodes.map((n) => {
+            if (n.id !== nodeId) return n;
+            
+            const approvalRecord: ApprovalRecord = {
+              id: generateId(),
+              projectNodeId: nodeId,
+              approverId,
+              decision: 'rejected',
+              comment,
+              createdAt: getTodayISO(),
+            };
+            
+            return {
+              ...n,
+              status: 'rejected' as Status,
+              approvalHistory: [...n.approvalHistory, approvalRecord],
+            };
+          }),
+        };
+      });
+
+      return { projects };
+    });
   },
   completeNode: (projectId, nodeId) => {
     set((state) => {
@@ -257,12 +428,32 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
     return tasks;
   },
+  getPendingApprovals: (userId) => {
+    const approvals: ProjectNode[] = [];
+    const user = useUserStore.getState().getUserById(userId);
+    if (!user) return approvals;
+    
+    get().projects.forEach(p => {
+      p.nodes.forEach(n => {
+        if (n.status !== 'pending_approval') return;
+        
+        if (n.approvalType === 'manager' && user.role === 'manager') {
+          approvals.push(n);
+        } else if (n.approvalType === 'admin' && user.role === 'admin') {
+          approvals.push(n);
+        } else if (n.approvalType === 'multi_level' && (user.role === 'manager' || user.role === 'admin')) {
+          approvals.push(n);
+        }
+      });
+    });
+    return approvals;
+  },
   checkAndUpdateOverdue: () => {
     set((state) => ({
       projects: state.projects.map((p) => ({
         ...p,
         nodes: p.nodes.map((n) =>
-          n.status === 'in_progress' && isOverdue(n.dueDate)
+          (n.status === 'in_progress' || n.status === 'pending') && isOverdue(n.dueDate)
             ? { ...n, status: 'delayed' as Status }
             : n
         ),

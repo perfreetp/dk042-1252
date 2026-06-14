@@ -2,11 +2,22 @@ export type NodeType = 'quotation' | 'contract' | 'material' | 'venue' | 'rehear
 
 export type ApprovalType = 'none' | 'manager' | 'admin' | 'multi_level';
 
-export type Status = 'pending' | 'in_progress' | 'completed' | 'delayed' | 'rejected';
+export type Status = 'pending' | 'in_progress' | 'pending_approval' | 'completed' | 'delayed' | 'rejected';
 
 export type UserRole = 'admin' | 'manager' | 'executor';
 
 export type ExceptionStatus = 'open' | 'in_progress' | 'resolved';
+
+export type ApprovalDecision = 'approved' | 'rejected';
+
+export interface ApprovalRecord {
+  id: string;
+  projectNodeId: string;
+  approverId: string;
+  decision: ApprovalDecision;
+  comment: string;
+  createdAt: string;
+}
 
 export interface WorkflowNode {
   id: string;
@@ -22,6 +33,18 @@ export interface WorkflowNode {
   positionY: number;
 }
 
+export interface TemplateVersion {
+  id: string;
+  templateId: string;
+  version: string;
+  name: string;
+  description: string;
+  nodes: WorkflowNode[];
+  createdAt: string;
+  createdBy: string;
+  changelog: string;
+}
+
 export interface WorkflowTemplate {
   id: string;
   name: string;
@@ -29,6 +52,9 @@ export interface WorkflowTemplate {
   nodes: WorkflowNode[];
   createdAt: string;
   updatedAt: string;
+  version: string;
+  versions: TemplateVersion[];
+  parentTemplateId?: string;
 }
 
 export interface Deliverable {
@@ -56,18 +82,23 @@ export interface ProjectNode {
   type: NodeType;
   status: Status;
   assigneeId: string;
+  approvalType: ApprovalType;
   dueDate: string;
   actualStartDate?: string;
   actualEndDate?: string;
+  submittedAt?: string;
   prerequisites: string[];
   requiredMaterials: string[];
   deliverables: Deliverable[];
   comments: Comment[];
+  approvalHistory: ApprovalRecord[];
 }
 
 export interface Project {
   id: string;
   templateId: string;
+  templateVersionId?: string;
+  templateVersion?: string;
   name: string;
   clientName: string;
   status: Status;

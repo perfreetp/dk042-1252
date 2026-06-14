@@ -186,7 +186,7 @@ export const TemplateDesigner = () => {
   const handleStartConnection = (nodeId: string) => {
     if (connectingFrom === null) {
       setConnectingFrom(nodeId);
-    } else if (connectingFrom !== nodeId) {
+    } else if (connectingFrom === nodeId) {
       setConnectingFrom(null);
     } else {
       const fromNode = template?.nodes.find(n => n.id === connectingFrom);
@@ -223,43 +223,54 @@ export const TemplateDesigner = () => {
       const toNode = template.nodes.find(n => n.id === conn.to);
       if (!fromNode || !toNode) return null;
 
-      const fromX = fromNode.positionX + 120;
-      const fromY = fromNode.positionY + 40;
+      const fromX = fromNode.positionX + 224;
+      const fromY = fromNode.positionY + 50;
       const toX = toNode.positionX;
-      const toY = toNode.positionY + 40;
+      const toY = toNode.positionY + 50;
 
       const midX = (fromX + toX) / 2;
       const midY = (fromY + toY) / 2;
+      const controlOffset = Math.abs(toX - fromX) * 0.4;
 
       return (
-        <g key={idx}>
+        <g key={idx} className="connection-group group cursor-pointer">
           <path
-            d={`M ${fromX} ${fromY} C ${midX} ${fromY}, ${midX} ${toY}, ${toX} ${toY}`}
+            d={`M ${fromX} ${fromY} C ${fromX + controlOffset} ${fromY}, ${toX - controlOffset} ${toY}, ${toX} ${toY}`}
+            fill="none"
+            stroke="transparent"
+            strokeWidth="20"
+            onClick={() => handleRemoveConnection(conn.from, conn.to)}
+          />
+          <path
+            d={`M ${fromX} ${fromY} C ${fromX + controlOffset} ${fromY}, ${toX - controlOffset} ${toY}, ${toX} ${toY}`}
             fill="none"
             stroke="#64748b"
             strokeWidth="2"
-            className="transition-colors"
+            className="transition-colors group-hover:stroke-red-400"
+            pointerEvents="none"
           />
           <polygon
-            points={`${toX},${toY} ${toX-8},${toY-4} ${toX-8},${toY+4}`}
+            points={`${toX},${toY} ${toX-10},${toY-5} ${toX-10},${toY+5}`}
             fill="#64748b"
+            className="transition-colors group-hover:fill-red-400"
+            pointerEvents="none"
           />
-          <circle
-            cx={midX}
-            cy={midY}
-            r={10}
-            fill="white"
-            stroke="#ef4444"
-            strokeWidth="2"
-            className="cursor-pointer hover:fill-red-50 transition-all opacity-0 group-hover:opacity-100"
+          <g
+            className="opacity-0 group-hover:opacity-100 transition-opacity"
             onClick={() => handleRemoveConnection(conn.from, conn.to)}
-          />
-          <X
-            x={midX - 4}
-            y={midY - 4}
-            size={8}
-            className="pointer-events-none text-red-500 opacity-0 group-hover:opacity-100"
-          />
+          >
+            <circle
+              cx={midX}
+              cy={midY}
+              r={12}
+              fill="white"
+              stroke="#ef4444"
+              strokeWidth="2"
+              className="cursor-pointer hover:fill-red-50"
+            />
+            <line x1={midX - 5} y1={midY - 5} x2={midX + 5} y2={midY + 5} stroke="#ef4444" strokeWidth="2" pointerEvents="none" />
+            <line x1={midX - 5} y1={midY + 5} x2={midX + 5} y2={midY - 5} stroke="#ef4444" strokeWidth="2" pointerEvents="none" />
+          </g>
         </g>
       );
     });

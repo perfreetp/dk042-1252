@@ -26,17 +26,22 @@ import {
   daysBetween,
   getTodayISO,
   isOverdue,
+  getOverdueDays,
+  getDaysUntilDue,
+  isAtRisk,
   nodeTypeLabels,
   nodeTypeBgColors,
   statusColors,
   approvalTypeLabels,
+  approvalDecisionLabels,
+  approvalDecisionColors,
 } from '@/utils';
-import type { ProjectNode } from '@/types';
+import type { ProjectNode, ApprovalDecision } from '@/types';
 
 export const ProjectDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { getProjectById, startNode, completeNode, rejectNode, addDeliverable, addComment } = useProjectStore();
+  const { getProjectById, startNode, completeNode, rejectNode, addDeliverable, addComment, submitForApproval, approveNode, rejectNodeWithApproval, getPendingApprovals } = useProjectStore();
   const { getUserById, currentUser } = useUserStore();
   const { getTemplateById } = useTemplateStore();
   const { getExceptionsByProject, createException } = useExceptionStore();
@@ -45,9 +50,14 @@ export const ProjectDetail = () => {
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showExceptionModal, setShowExceptionModal] = useState(false);
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [showRejectApprovalModal, setShowRejectApprovalModal] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  const [approvalComment, setApprovalComment] = useState('');
+  const [rejectApprovalComment, setRejectApprovalComment] = useState('');
   const [newDeliverable, setNewDeliverable] = useState({ name: '', url: '' });
   const [newComment, setNewComment] = useState('');
+  const [detailTab, setDetailTab] = useState<'info' | 'approval'>('info');
   const [newException, setNewException] = useState({
     title: '',
     changeReason: '',
@@ -190,6 +200,75 @@ export const ProjectDetail = () => {
       const updatedNode = updated.nodes.find(n => n.id === node.id);
       if (updatedNode) setSelectedNode(updatedNode);
     }
+  };
+
+  const handleSubmitForApproval = (nodeId: string) => {
+    submitForApproval(project.id, nodeId);
+    const updated = getProjectById(project.id);
+    if (updated) {
+      setProject(updated);
+      const node = updated.nodes.find(n => n.id === nodeId);
+      if (node) setSelectedNode(node);
+    }
+  };
+
+  const handleApproveNode = () => {
+    if (!selectedNode) return;
+    approveNode(project.id, selectedNode.id, currentUser.id, approvalComment);
+    const updated = getProjectById(project.id);
+    if (updated) {
+      setProject(updated);
+      const node = updated.nodes.find(n => n.id === selectedNode.id);
+      if (node) setSelectedNode(node);
+    }
+    setShowApprovalModal(false);
+    setApprovalComment('');
+  };
+
+  const handleRejectNodeWithApproval = () => {
+    if (!selectedNode || !rejectApprovalComment.trim()) return;
+    rejectNodeWithApproval(project.id, selectedNode.id, currentUser.id, rejectApprovalComment);
+    addComment(project.id, selectedNode.id, {
+      content: `【审批退回】${rejectApprovalComment}`,
+      userId: currentUser.id,
+    });
+    const updated = getProjectById(project.id);
+    if (updated) {
+      setProject(updated);
+      const node = updated.nodes.find(n => n.id === selectedNode.id);
+      if (node) setSelectedNode(node);
+    }
+    setShowRejectApprovalModal(false);
+    setRejectApprovalComment('');
+  };
+
+  const handleManagerRejectNode = () => {
+    if (!selectedNode || !rejectReason.trim()) return;
+    rejectNodeWithApproval(project.id, selectedNode.id, currentUser.id, rejectReason);
+    addComment(project.id, selectedNode.id, {
+      content: `【退回修改】${rejectReason}`,
+      userId: currentUser.id,
+    });
+    const updated = getProjectById(project.id);
+    if (updated) {
+      setProject(updated);
+      const node = updated.nodes.find(n => n.id === selectedNode.id);
+      if (node) setSelectedNode(node);
+    }
+    setShowRejectModal(false);
+    setRejectReason('');
+  };
+
+  const isApprover = (node: ProjectNode) => {
+    if (node.status !== 'pending_approval') return false;
+    if (node.approvalType === 'manager' && currentUser.role === 'manager') return true;
+    if (node.approvalType === 'admin' && currentUser.role === 'admin') return true;
+    if (node.approvalType === 'multi_level' && (currentUser.role === 'manager' || currentUser.role === 'admin')) return true;
+    return false;
+  };
+
+  const isManagerOrAdmin = () => {
+    return currentUser.role === 'manager' || currentUser.role === 'admin';
   };
 
   const today = getTodayISO();
@@ -368,6 +447,36 @@ export const ProjectDetail = () => {
                 </div>
               </div>
               <div className="p-6 max-h-[calc(100vh-300px)] overflow-y-auto">
+                <div className="flex border-b border-slate-200 mb-6">
+                  <button
+                    onClick={() => setDetailTab('info')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                      detailTab === 'info'
+                        ? 'border-amber-500 text-amber-600'
+                        : 'border-transparent text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    基本信息
+                  </button>
+                  <button
+                    onClick={() => setDetailTab('approval')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                      detailTab === 'approval'
+                        ? 'border-amber-500 text-amber-600'
+                        : 'border-transparent text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    审批历史
+                    {selectedNode.approvalHistory.length > 0 && (
+                      <span className="ml-1 px-1.5 py-0.5 text-xs bg-slate-100 text-slate-600 rounded-full">
+                        {selectedNode.approvalHistory.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {detailTab === 'info' ? (
+                  <>
                 <div className="space-y-4 mb-6">
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">节点名称</label>
@@ -397,9 +506,27 @@ export const ProjectDetail = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">截止日期</label>
-                    <p className={`${isOverdue(selectedNode.dueDate) && selectedNode.status !== 'completed' ? 'text-red-600 font-medium' : 'text-slate-800'}`}>
-                      {formatDate(selectedNode.dueDate)}
-                    </p>
+                    <div className="flex flex-col gap-1">
+                      <p className={`${isOverdue(selectedNode.dueDate) && selectedNode.status !== 'completed' ? 'text-red-600 font-medium' : 'text-slate-800'}`}>
+                        {formatDate(selectedNode.dueDate)}
+                      </p>
+                      {selectedNode.status !== 'completed' && (
+                        <>
+                          {getOverdueDays(selectedNode.dueDate) > 0 && (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600">
+                              <AlertTriangle className="w-3 h-3" />
+                              已超期 {getOverdueDays(selectedNode.dueDate)} 天
+                            </span>
+                          )}
+                          {getOverdueDays(selectedNode.dueDate) === 0 && isAtRisk(selectedNode.dueDate) && (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-orange-600">
+                              <Clock className="w-3 h-3" />
+                              还剩 {getDaysUntilDue(selectedNode.dueDate)} 天
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">审批方式</label>
@@ -418,8 +545,8 @@ export const ProjectDetail = () => {
                   </div>
                 </div>
 
-                {currentUser.role === 'manager' && selectedNode.status === 'in_progress' && (
-                  <div className="flex gap-2 mb-6">
+                {isManagerOrAdmin() && selectedNode.status !== 'completed' && (
+                  <div className="flex gap-2 mb-4">
                     <button
                       onClick={() => handleUrge(selectedNode)}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 font-medium rounded-lg transition-colors text-sm"
@@ -437,7 +564,42 @@ export const ProjectDetail = () => {
                   </div>
                 )}
 
-                {currentUser.role === 'manager' && (selectedNode.status === 'in_progress' || selectedNode.status === 'delayed') && (
+                {isApprover(selectedNode) && selectedNode.status === 'pending_approval' && (
+                  <div className="p-4 bg-violet-50 rounded-xl mb-6 border border-violet-100">
+                    <h4 className="font-semibold text-violet-800 mb-3 flex items-center gap-2">
+                      <Clock className="w-4 h-4" />
+                      待您审批
+                    </h4>
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-violet-700 mb-1.5">审批意见</label>
+                      <textarea
+                        value={approvalComment}
+                        onChange={(e) => setApprovalComment(e.target.value)}
+                        placeholder="请输入审批意见（选填）"
+                        rows={3}
+                        className="w-full px-3 py-2 border border-violet-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none transition-all resize-none bg-white"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setShowRejectApprovalModal(true)}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-red-500 hover:bg-red-600 text-white font-medium rounded-lg transition-colors text-sm"
+                      >
+                        <XCircle className="w-4 h-4" />
+                        审批退回
+                      </button>
+                      <button
+                        onClick={handleApproveNode}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg transition-colors text-sm"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        审批通过
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {isManagerOrAdmin() && (selectedNode.status === 'pending_approval' || selectedNode.status === 'in_progress') && (
                   <div className="flex gap-2 mb-6">
                     <button
                       onClick={() => handleCompleteNode(selectedNode.id)}
@@ -451,26 +613,38 @@ export const ProjectDetail = () => {
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-red-500 hover:bg-red-600 text-white font-medium rounded-lg transition-colors text-sm"
                     >
                       <XCircle className="w-4 h-4" />
-                      退回
+                      退回修改
                     </button>
                   </div>
                 )}
 
-                {(selectedNode.status === 'in_progress' || selectedNode.status === 'rejected') && selectedNode.assigneeId === currentUser.id && (
+                {selectedNode.status === 'pending' && canStartNode(selectedNode) && selectedNode.assigneeId === currentUser.id && (
+                  <div className="mb-6">
+                    <button
+                      onClick={() => handleStartNode(selectedNode.id)}
+                      className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg transition-colors text-sm"
+                    >
+                      <Plus className="w-4 h-4" />
+                      开始处理
+                    </button>
+                  </div>
+                )}
+
+                {(selectedNode.status === 'in_progress' || selectedNode.status === 'delayed' || selectedNode.status === 'rejected') && selectedNode.assigneeId === currentUser.id && (
                   <div className="flex gap-2 mb-6">
                     <button
                       onClick={() => setShowUploadModal(true)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg transition-colors text-sm"
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-lg transition-colors text-sm"
                     >
                       <Upload className="w-4 h-4" />
                       上传交付物
                     </button>
                     <button
-                      onClick={() => handleCompleteNode(selectedNode.id)}
+                      onClick={() => handleSubmitForApproval(selectedNode.id)}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg transition-colors text-sm"
                     >
                       <CheckCircle2 className="w-4 h-4" />
-                      完成
+                      {selectedNode.approvalType === 'none' ? '确认完成' : '提交审批'}
                     </button>
                   </div>
                 )}
@@ -548,6 +722,70 @@ export const ProjectDetail = () => {
                     </button>
                   </div>
                 </div>
+                  </>
+                ) : (
+                  <div>
+                    {selectedNode.approvalHistory.length === 0 ? (
+                      <div className="text-center py-12 bg-slate-50 rounded-lg">
+                        <FileText className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                        <p className="text-sm text-slate-500 font-medium mb-1">暂无审批记录</p>
+                        <p className="text-xs text-slate-400">节点提交审批后，审批记录将在此展示</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {selectedNode.approvalHistory.map((record) => {
+                          const approver = getUserById(record.approverId);
+                          return (
+                            <div
+                              key={record.id}
+                              className={`p-4 rounded-xl border ${
+                                record.decision === 'approved'
+                                  ? 'bg-emerald-50 border-emerald-100'
+                                  : 'bg-red-50 border-red-100'
+                              }`}
+                            >
+                              <div className="flex items-start gap-3 mb-3">
+                                {approver && (
+                                  <Avatar src={approver.avatar} alt={approver.name} size="md" />
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between gap-2 mb-1">
+                                    <span className="text-sm font-medium text-slate-800">
+                                      {approver?.name || '未知审批人'}
+                                    </span>
+                                    <span
+                                      className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
+                                        record.decision === 'approved'
+                                          ? 'bg-emerald-100 text-emerald-700'
+                                          : 'bg-red-100 text-red-700'
+                                      }`}
+                                    >
+                                      {record.decision === 'approved' ? (
+                                        <CheckCircle2 className="w-3 h-3" />
+                                      ) : (
+                                        <XCircle className="w-3 h-3" />
+                                      )}
+                                      {approvalDecisionLabels[record.decision]}
+                                    </span>
+                                  </div>
+                                  <div className="text-xs text-slate-500">
+                                    {formatDateTime(record.createdAt)}
+                                  </div>
+                                </div>
+                              </div>
+                              {record.comment && (
+                                <div className="mt-2 pt-3 border-t border-slate-200/60">
+                                  <div className="text-xs text-slate-500 mb-1">审批意见</div>
+                                  <p className="text-sm text-slate-700">{record.comment}</p>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -557,7 +795,7 @@ export const ProjectDetail = () => {
       <Modal
         isOpen={showRejectModal}
         onClose={() => setShowRejectModal(false)}
-        title="退回任务"
+        title="退回修改"
         size="md"
         footer={
           <>
@@ -568,7 +806,7 @@ export const ProjectDetail = () => {
               取消
             </button>
             <button
-              onClick={handleRejectNode}
+              onClick={handleManagerRejectNode}
               disabled={!rejectReason.trim()}
               className="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white font-medium rounded-lg transition-colors"
             >
@@ -582,7 +820,42 @@ export const ProjectDetail = () => {
           <textarea
             value={rejectReason}
             onChange={(e) => setRejectReason(e.target.value)}
-            placeholder="请详细说明退回原因..."
+            placeholder="请详细说明退回修改的原因..."
+            rows={4}
+            className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all resize-none"
+          />
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showRejectApprovalModal}
+        onClose={() => setShowRejectApprovalModal(false)}
+        title="审批退回"
+        size="md"
+        footer={
+          <>
+            <button
+              onClick={() => setShowRejectApprovalModal(false)}
+              className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleRejectNodeWithApproval}
+              disabled={!rejectApprovalComment.trim()}
+              className="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white font-medium rounded-lg transition-colors"
+            >
+              确认退回
+            </button>
+          </>
+        }
+      >
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">退回意见 *</label>
+          <textarea
+            value={rejectApprovalComment}
+            onChange={(e) => setRejectApprovalComment(e.target.value)}
+            placeholder="请详细说明审批退回的意见..."
             rows={4}
             className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all resize-none"
           />

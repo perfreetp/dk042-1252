@@ -31,12 +31,32 @@ export const daysBetween = (date1: string, date2: string): number => {
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 };
 
-export const isOverdue = (dueDate: string): boolean => {
+export const getOverdueDays = (dueDate: string): number => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const due = new Date(dueDate);
   due.setHours(0, 0, 0, 0);
-  return due < today;
+  const diffTime = today.getTime() - due.getTime();
+  if (diffTime <= 0) return 0;
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+};
+
+export const getDaysUntilDue = (dueDate: string): number => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const due = new Date(dueDate);
+  due.setHours(0, 0, 0, 0);
+  const diffTime = due.getTime() - today.getTime();
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+};
+
+export const isOverdue = (dueDate: string): boolean => {
+  return getOverdueDays(dueDate) > 0;
+};
+
+export const isAtRisk = (dueDate: string): boolean => {
+  const days = getDaysUntilDue(dueDate);
+  return days >= 0 && days <= 2;
 };
 
 export const getTodayISO = (): string => {

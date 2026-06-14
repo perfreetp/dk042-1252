@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Filter, Calendar, Clock, Users, AlertTriangle, ChevronRight } from 'lucide-react';
+import { Search, Filter, Calendar, Clock, Users, AlertTriangle, ChevronRight, List, BarChart3 } from 'lucide-react';
 import { useProjectStore, useUserStore, useExceptionStore } from '@/store';
 import { StatusBadge } from '@/components/StatusBadge';
 import { EmptyState } from '@/components/EmptyState';
 import { formatDate, daysBetween, getTodayISO } from '@/utils';
 import type { Status } from '@/types';
+import { GanttView } from './GanttView';
 
 const statusFilters: { value: Status | 'all'; label: string }[] = [
   { value: 'all', label: '全部' },
@@ -22,6 +23,8 @@ export const ProjectList = () => {
   const { exceptions } = useExceptionStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<Status | 'all'>('all');
+  type ViewMode = 'list' | 'gantt';
+  const [viewMode, setViewMode] = useState<ViewMode>('list' as ViewMode);
 
   useEffect(() => {
     checkAndUpdateOverdue();
@@ -147,9 +150,35 @@ export const ProjectList = () => {
               ))}
             </div>
           </div>
+          <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 ml-auto">
+            <button
+              onClick={() => setViewMode('list')}
+              className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-white text-slate-800 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <List className="w-4 h-4" />
+              列表
+            </button>
+            <button
+              onClick={() => setViewMode('gantt')}
+              className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                (viewMode as ViewMode) === 'gantt'
+                  ? 'bg-white text-slate-800 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <BarChart3 className="w-4 h-4" />
+              甘特图
+            </button>
+          </div>
         </div>
 
-        {filteredProjects.length === 0 ? (
+        {viewMode === 'gantt' ? (
+          <GanttView onViewChange={setViewMode} />
+        ) : filteredProjects.length === 0 ? (
           <EmptyState
             icon="folder"
             title="暂无项目"

@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Filter, Calendar, Clock, AlertTriangle, CheckCircle, ChevronRight, ListTodo } from 'lucide-react';
+import { Search, Filter, Calendar, Clock, AlertTriangle, CheckCircle, ChevronRight, ListTodo, FileCheck } from 'lucide-react';
 import { useProjectStore, useUserStore } from '@/store';
 import { StatusBadge, NodeTypeBadge } from '@/components/StatusBadge';
 import { EmptyState } from '@/components/EmptyState';
-import { formatDate, daysBetween, getTodayISO, isOverdue } from '@/utils';
+import { formatDate, daysBetween, getTodayISO, isOverdue, getOverdueDays, getDaysUntilDue, isAtRisk } from '@/utils';
 import type { Status, ProjectNode } from '@/types';
 
 const statusFilters: { value: Status | 'all'; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'pending', label: '待处理' },
   { value: 'in_progress', label: '进行中' },
+  { value: 'pending_approval', label: '待审批' },
   { value: 'delayed', label: '已逾期' },
   { value: 'rejected', label: '已退回' },
 ];
@@ -22,7 +23,7 @@ interface TaskWithProject extends ProjectNode {
 
 export const TaskList = () => {
   const navigate = useNavigate();
-  const { projects, checkAndUpdateOverdue } = useProjectStore();
+  const { projects, checkAndUpdateOverdue, getPendingApprovals } = useProjectStore();
   const { currentUser, getUserById } = useUserStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<Status | 'all'>('all');
@@ -44,7 +45,22 @@ export const TaskList = () => {
     });
   });
 
-  const filteredTasks = myTasks.filter(task => {
+  const myApprovals: TaskWithProject[] = [];
+  const pendingApprovals = getPendingApprovals(currentUser.id);
+  pendingApprovals.forEach(node => {
+    const project = projects.find(p => p.id === node.projectId);
+    if (project && !myTasks.find(t => t.id === node.id)) {
+      myApprovals.push({
+        ...node,
+        projectName: project.name,
+        clientName: project.clientName,
+      });
+    }
+  });
+
+  const allTasks = [...myTasks, ...myApprovals];
+
+  const filteredTasks = allTasks.filter(task => {
     const matchesSearch = task.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       task.projectName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       task.clientName.toLowerCase().includes(searchQuery.toLowerCase());
@@ -53,10 +69,11 @@ export const TaskList = () => {
   });
 
   const stats = {
-    total: myTasks.length,
-    pending: myTasks.filter(t => t.status === 'pending').length,
-    inProgress: myTasks.filter(t => t.status === 'in_progress').length,
-    delayed: myTasks.filter(t => t.status === 'delayed' || (t.status === 'in_progress' && isOverdue(t.dueDate))).length,
+    total: allTasks.length,
+    pending: allTasks.filter(t => t.status === 'pending').length,
+    inProgress: allTasks.filter(t => t.status === 'in_progress').length,
+    pendingApproval: allTasks.filter(t => t.status === 'pending_approval').length,
+    delayed: allTasks.filter(t => t.status === 'delayed' || (t.status === 'in_progress' && isOverdue(t.dueDate))).length,
   };
 
   const getPrerequisiteStatus = (task: TaskWithProject) => {
@@ -71,6 +88,36 @@ export const TaskList = () => {
     return pendingPrereqs.length > 0 ? 'blocked' : 'ready';
   };
 
+  const getDueDateDisplay = (task: TaskWithProject) => {
+    if (task.status === 'completed') return null;
+    const overdueDays = getOverdueDays(task.dueDate);
+    const daysUntilDue = getDaysUntilDue(task.dueDate);
+    const isOverdueTask = isOverdue(task.dueDate);
+    
+    if (isOverdueTask) {
+      return (
+        <span className="inline-flex items-center gap-1 text-red-600 font-bold">
+          <AlertTriangle className="w-4 h-4" />
+          已超期 {overdueDays} 天
+        </span>
+      );
+    }
+    if (isAtRisk(task.dueDate)) {
+      return (
+        <span className="inline-flex items-center gap-1 text-orange-600 font-medium">
+          <Clock className="w-4 h-4" />
+          还剩 {daysUntilDue} 天
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 text-slate-500">
+        <Clock className="w-4 h-4" />
+        还剩 {daysUntilDue} 天
+      </span>
+    );
+  };
+
   return (
     <div className="animate-fade-in">
       <div className="bg-white border-b border-slate-200 px-8 py-6">
@@ -83,7 +130,7 @@ export const TaskList = () => {
       </div>
 
       <div className="p-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
           <div className="bg-white rounded-xl border border-slate-200 p-6">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
@@ -119,6 +166,17 @@ export const TaskList = () => {
           </div>
           <div className="bg-white rounded-xl border border-slate-200 p-6">
             <div className="flex items-center gap-3 mb-3">
+              <div className="w-12 h-12 rounded-xl bg-violet-100 flex items-center justify-center">
+                <FileCheck className="w-6 h-6 text-violet-600" />
+              </div>
+              <div className="text-right">
+                <p className="text-3xl font-bold text-slate-800">{stats.pendingApproval}</p>
+                <p className="text-sm text-slate-500">待审批</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 p-6">
+            <div className="flex items-center gap-3 mb-3">
               <div className="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center">
                 <AlertTriangle className="w-6 h-6 text-red-600" />
               </div>
@@ -143,7 +201,7 @@ export const TaskList = () => {
           </div>
           <div className="flex items-center gap-2">
             <Filter className="w-5 h-5 text-slate-400" />
-            <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+            <div className="flex gap-1 bg-slate-100 rounded-lg p-1 flex-wrap">
               {statusFilters.map((filter) => (
                 <button
                   key={filter.value}
@@ -175,6 +233,8 @@ export const TaskList = () => {
               const daysLeft = daysBetween(today, task.dueDate);
               const prereqStatus = getPrerequisiteStatus(task);
               const isOverdueTask = isOverdue(task.dueDate) && task.status !== 'completed';
+              const dueDateDisplay = getDueDateDisplay(task);
+              const isApprovalTask = task.assigneeId !== currentUser.id;
 
               return (
                 <div
@@ -184,19 +244,25 @@ export const TaskList = () => {
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
+                      <div className="flex items-center gap-3 mb-2 flex-wrap">
                         <h3 className="text-lg font-semibold text-slate-800 group-hover:text-amber-600 transition-colors">
                           {task.name}
                         </h3>
                         <NodeTypeBadge type={task.type} />
                         <StatusBadge status={task.status} />
+                        {isApprovalTask && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-xs font-medium">
+                            <FileCheck className="w-3 h-3" />
+                            待您审批
+                          </span>
+                        )}
                         {isOverdueTask && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-medium">
                             <AlertTriangle className="w-3 h-3" />
                             已逾期
                           </span>
                         )}
-                        {prereqStatus === 'blocked' && (
+                        {prereqStatus === 'blocked' && !isOverdueTask && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-medium">
                             <Clock className="w-3 h-3" />
                             等待前置任务
@@ -205,17 +271,14 @@ export const TaskList = () => {
                       </div>
                       <p className="text-slate-500 mb-4">{task.projectName} · {task.clientName}</p>
 
-                      <div className="flex items-center gap-6 text-sm">
+                      <div className="flex items-center gap-6 text-sm flex-wrap">
                         <div className="flex items-center gap-2 text-slate-500">
                           <Calendar className="w-4 h-4" />
                           <span>截止日期: {formatDate(task.dueDate)}</span>
                         </div>
-                        {task.status !== 'completed' && (
-                          <div className="flex items-center gap-2 text-slate-500">
-                            <Clock className="w-4 h-4" />
-                            <span className={daysLeft < 3 ? 'text-red-600 font-medium' : ''}>
-                              {daysLeft > 0 ? `剩余 ${daysLeft} 天` : daysLeft === 0 ? '今天截止' : `已超期 ${Math.abs(daysLeft)} 天`}
-                            </span>
+                        {task.status !== 'completed' && dueDateDisplay && (
+                          <div className="flex items-center gap-2">
+                            {dueDateDisplay}
                           </div>
                         )}
                         {assignee && (
@@ -241,6 +304,9 @@ export const TaskList = () => {
                       <div className="mt-4 flex items-center gap-4 text-xs text-slate-400">
                         <span>{task.deliverables.length} 个交付物</span>
                         <span>{task.comments.length} 条留言</span>
+                        {task.approvalHistory.length > 0 && (
+                          <span>{task.approvalHistory.length} 次审批</span>
+                        )}
                       </div>
                     </div>
 

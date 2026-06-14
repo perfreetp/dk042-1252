@@ -13,6 +13,9 @@ import {
   Send,
   Play,
   Link2,
+  ThumbsUp,
+  ThumbsDown,
+  History,
 } from 'lucide-react';
 import { useProjectStore, useUserStore, useExceptionStore, useTemplateStore } from '@/store';
 import { StatusBadge, NodeTypeBadge } from '@/components/StatusBadge';
@@ -25,14 +28,19 @@ import {
   daysBetween,
   getTodayISO,
   isOverdue,
+  getOverdueDays,
+  getDaysUntilDue,
+  isAtRisk,
   approvalTypeLabels,
+  approvalDecisionLabels,
+  approvalDecisionColors,
 } from '@/utils';
 import type { ProjectNode } from '@/types';
 
 export const TaskDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { projects, startNode, completeNode, addDeliverable, addComment } = useProjectStore();
+  const { projects, startNode, completeNode, addDeliverable, addComment, submitForApproval, approveNode, rejectNodeWithApproval } = useProjectStore();
   const { getUserById, currentUser } = useUserStore();
   const { getTemplateById } = useTemplateStore();
   const { createException } = useExceptionStore();
@@ -49,6 +57,7 @@ export const TaskDetail = () => {
     impactScope: '',
     remedyAction: '',
   });
+  const [approvalComment, setApprovalComment] = useState('');
 
   useEffect(() => {
     if (id) {
@@ -96,6 +105,15 @@ export const TaskDetail = () => {
     return allPrereqsMet;
   };
 
+  const isApprover = () => {
+    if (!task || task.approvalType === 'none') return false;
+    const userRole = currentUser.role;
+    if (task.approvalType === 'manager' && userRole === 'manager') return true;
+    if (task.approvalType === 'admin' && userRole === 'admin') return true;
+    if (task.approvalType === 'multi_level' && (userRole === 'manager' || userRole === 'admin')) return true;
+    return false;
+  };
+
   const refreshTask = () => {
     if (id) {
       let foundTask: ProjectNode | null = null;
@@ -120,6 +138,26 @@ export const TaskDetail = () => {
     if (!task || !project) return;
     completeNode(project.id, task.id);
     navigate('/tasks');
+  };
+
+  const handleSubmitForApproval = () => {
+    if (!task || !project) return;
+    submitForApproval(project.id, task.id);
+    refreshTask();
+  };
+
+  const handleApproveNode = () => {
+    if (!task || !project) return;
+    approveNode(project.id, task.id, currentUser.id, approvalComment);
+    refreshTask();
+    setApprovalComment('');
+  };
+
+  const handleRejectNodeWithApproval = () => {
+    if (!task || !project) return;
+    rejectNodeWithApproval(project.id, task.id, currentUser.id, approvalComment);
+    refreshTask();
+    setApprovalComment('');
   };
 
   const handleUploadDeliverable = () => {
@@ -162,8 +200,41 @@ export const TaskDetail = () => {
   const today = getTodayISO();
   const daysLeft = daysBetween(today, task.dueDate);
   const isOverdueTask = isOverdue(task.dueDate) && task.status !== 'completed';
+  const overdueDays = getOverdueDays(task.dueDate);
+  const daysUntilDue = getDaysUntilDue(task.dueDate);
   const isAssignee = task.assigneeId === currentUser.id;
   const canStartTask = canStart();
+  const canApprove = isApprover();
+  const templateNode = template?.nodes.find(n => n.id === task.templateNodeId);
+  const taskApprovalType = templateNode?.approvalType || task.approvalType || 'none';
+
+  const getDueDateDisplay = () => {
+    if (task.status === 'completed') return null;
+    if (isOverdueTask) {
+      return (
+        <span className="inline-flex items-center gap-1 text-red-600 font-bold">
+          <AlertTriangle className="w-4 h-4" />
+          已超期 {overdueDays} 天
+        </span>
+      );
+    }
+    if (isAtRisk(task.dueDate)) {
+      return (
+        <span className="inline-flex items-center gap-1 text-orange-600 font-medium">
+          <Clock className="w-4 h-4" />
+          还剩 {daysUntilDue} 天
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 text-slate-500">
+        <Clock className="w-4 h-4" />
+        还剩 {daysUntilDue} 天
+      </span>
+    );
+  };
+
+  const dueDateDisplay = getDueDateDisplay();
 
   return (
     <div className="animate-fade-in min-h-screen">
@@ -193,23 +264,26 @@ export const TaskDetail = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-8 text-sm">
+        <div className="flex items-center gap-8 text-sm flex-wrap">
           <div className="flex items-center gap-2 text-slate-500">
             <Calendar className="w-4 h-4" />
             <span>截止日期: {formatDate(task.dueDate)}</span>
           </div>
-          {task.status !== 'completed' && (
-            <div className="flex items-center gap-2 text-slate-500">
-              <Clock className="w-4 h-4" />
-              <span className={daysLeft < 3 ? 'text-red-600 font-medium' : ''}>
-                {daysLeft > 0 ? `剩余 ${daysLeft} 天` : daysLeft === 0 ? '今天截止' : `已超期 ${Math.abs(daysLeft)} 天`}
-              </span>
+          {dueDateDisplay && (
+            <div className="flex items-center gap-2">
+              {dueDateDisplay}
             </div>
           )}
           {assignee && (
             <div className="flex items-center gap-2 text-slate-500">
               <User className="w-4 h-4" />
               <span>负责人: {assignee.name}</span>
+            </div>
+          )}
+          {task.submittedAt && (
+            <div className="flex items-center gap-2 text-slate-500">
+              <Send className="w-4 h-4" />
+              <span>提交时间: {formatDateTime(task.submittedAt)}</span>
             </div>
           )}
           {task.actualStartDate && (
@@ -236,7 +310,7 @@ export const TaskDetail = () => {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">审批方式</label>
                   <p className="text-slate-800">
-                    {approvalTypeLabels[template?.nodes.find(n => n.id === task.templateNodeId)?.approvalType || 'none']}
+                    {approvalTypeLabels[taskApprovalType]}
                   </p>
                 </div>
                 <div>
@@ -245,10 +319,17 @@ export const TaskDetail = () => {
                 </div>
               </div>
 
+              {task.status !== 'completed' && (
+                <div className="mt-6 p-4 rounded-lg border bg-slate-50 border-slate-200">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">进度提示</label>
+                  {dueDateDisplay}
+                </div>
+              )}
+
               <div className="mt-6">
                 <label className="block text-sm font-medium text-slate-700 mb-2">必填材料</label>
                 <div className="space-y-2">
-                  {template?.nodes.find(n => n.id === task.templateNodeId)?.requiredMaterials.map((material, idx) => (
+                  {templateNode?.requiredMaterials.map((material, idx) => (
                     <div key={idx} className="flex items-center gap-2 text-sm text-slate-600">
                       <div className={`w-5 h-5 rounded-full flex items-center justify-center ${
                         task.deliverables.length > 0 ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'
@@ -282,7 +363,7 @@ export const TaskDetail = () => {
             <div className="bg-white rounded-xl border border-slate-200 p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-slate-800">交付物</h2>
-                {isAssignee && (task.status === 'in_progress' || task.status === 'rejected') && (
+                {isAssignee && (task.status === 'in_progress' || task.status === 'rejected' || task.status === 'delayed') && (
                   <button
                     onClick={() => setShowUploadModal(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium rounded-lg transition-colors"
@@ -320,6 +401,55 @@ export const TaskDetail = () => {
                         >
                           <Link2 className="w-4 h-4 text-slate-400 hover:text-amber-500" />
                         </a>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <History className="w-5 h-5 text-slate-600" />
+                <h2 className="text-lg font-semibold text-slate-800">审批历史</h2>
+              </div>
+              {task.approvalHistory.length === 0 ? (
+                <div className="text-center py-8 bg-slate-50 rounded-lg">
+                  <History className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                  <p className="text-sm text-slate-400">暂无审批记录</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {task.approvalHistory.map((record) => {
+                    const approver = getUserById(record.approverId);
+                    return (
+                      <div key={record.id} className="border border-slate-200 rounded-lg p-4 bg-slate-50">
+                        <div className="flex items-start gap-3">
+                          {approver && <Avatar src={approver.avatar} alt={approver.name} size="md" />}
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2 flex-wrap">
+                              <span className="text-sm font-medium text-slate-700">{approver?.name}</span>
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                record.decision === 'approved'
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : 'bg-red-100 text-red-700'
+                              }`}>
+                                {record.decision === 'approved' ? (
+                                  <ThumbsUp className="w-3 h-3 mr-1" />
+                                ) : (
+                                  <ThumbsDown className="w-3 h-3 mr-1" />
+                                )}
+                                {approvalDecisionLabels[record.decision]}
+                              </span>
+                              <span className="text-xs text-slate-400">{formatDateTime(record.createdAt)}</span>
+                            </div>
+                            {record.comment && (
+                              <p className="text-sm text-slate-600 bg-white p-3 rounded-lg border border-slate-200">
+                                {record.comment}
+                              </p>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     );
                   })}
@@ -403,17 +533,63 @@ export const TaskDetail = () => {
                     <Upload className="w-5 h-5" />
                     上传交付物
                   </button>
+                  {taskApprovalType === 'none' ? (
+                    <button
+                      onClick={handleCompleteNode}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg transition-colors mb-3"
+                    >
+                      <CheckCircle2 className="w-5 h-5" />
+                      确认完成
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleSubmitForApproval}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-violet-500 hover:bg-violet-600 text-white font-medium rounded-lg transition-colors mb-3"
+                    >
+                      <Send className="w-5 h-5" />
+                      提交审批
+                    </button>
+                  )}
+                </>
+              )}
+
+              {task.status === 'pending_approval' && canApprove && (
+                <>
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">审批意见</label>
+                    <textarea
+                      value={approvalComment}
+                      onChange={(e) => setApprovalComment(e.target.value)}
+                      placeholder="请输入审批意见..."
+                      rows={3}
+                      className="w-full px-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none transition-all resize-none"
+                    />
+                  </div>
                   <button
-                    onClick={handleCompleteNode}
+                    onClick={handleApproveNode}
                     className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg transition-colors mb-3"
                   >
-                    <CheckCircle2 className="w-5 h-5" />
-                    确认完成
+                    <ThumbsUp className="w-5 h-5" />
+                    审批通过
+                  </button>
+                  <button
+                    onClick={handleRejectNodeWithApproval}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-lg transition-colors mb-3"
+                  >
+                    <ThumbsDown className="w-5 h-5" />
+                    审批退回
                   </button>
                 </>
               )}
 
-              {task.status !== 'completed' && (
+              {task.status === 'pending_approval' && !canApprove && (
+                <div className="p-4 bg-violet-50 rounded-lg text-center mb-3">
+                  <Clock className="w-6 h-6 text-violet-500 mx-auto mb-2" />
+                  <p className="text-sm text-violet-600 font-medium">等待审批中...</p>
+                </div>
+              )}
+
+              {task.status !== 'completed' && task.status !== 'pending_approval' && (
                 <button
                   onClick={() => setShowExceptionModal(true)}
                   className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-50 hover:bg-red-100 text-red-600 font-medium rounded-lg transition-colors"
