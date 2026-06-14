@@ -43,7 +43,7 @@ export const ProjectDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { getProjectById, startNode, completeNode, rejectNode, addDeliverable, addComment, submitForApproval, approveNodeMulti, rejectNodeMulti, getPendingApprovals, getNodeApprovalInfo } = useProjectStore();
+  const { projects, getProjectById, startNode, completeNode, rejectNode, addDeliverable, addComment, submitForApproval, approveNodeMulti, rejectNodeMulti, getPendingApprovals, getNodeApprovalInfo } = useProjectStore();
   const { getUserById, currentUser } = useUserStore();
   const { getTemplateById } = useTemplateStore();
   const { getExceptionsByProject, createException } = useExceptionStore();
@@ -96,7 +96,7 @@ export const ProjectDetail = () => {
         }
       }
     }
-  }, [id, getProjectById, selectedNode, location.search]);
+  }, [id, projects, location.search]);
 
   if (!project) {
     return (
@@ -296,6 +296,31 @@ export const ProjectDetail = () => {
   const getApprovalStageUser = (stage: { approverId?: string }) => {
     if (stage.approverId) return getUserById(stage.approverId);
     return null;
+  };
+
+  const getCurrentApprovalInfo = (node: ProjectNode) => {
+    if (node.status !== 'pending_approval' || !node.approvalStages || node.currentStageOrder <= 0) {
+      return null;
+    }
+    const currentStage = node.approvalStages.find(s => s.order === node.currentStageOrder);
+    if (!currentStage) return null;
+
+    const totalStages = node.approvalStages.length;
+    const completedStages = node.approvalStages.filter(s => s.status === 'approved');
+    const previousComment = node.approvalHistory.length > 0
+      ? node.approvalHistory[node.approvalHistory.length - 1]
+      : null;
+
+    return {
+      currentRound: currentStage.order,
+      totalRounds: totalStages,
+      currentRole: currentStage.role,
+      currentLabel: currentStage.label,
+      isMultiLevel: totalStages > 1,
+      completedStages,
+      previousComment,
+      canCurrentUserApprove: currentStage.status === 'pending' && currentStage.role === currentUser?.role,
+    };
   };
 
   const progress = getProjectProgress();
@@ -632,6 +657,7 @@ export const ProjectDetail = () => {
                   const approvalInfo = getNodeApprovalInfo(project.id, selectedNode.id, currentUser.id);
                   const currentStage = selectedNode.approvalStages.find(s => s.order === selectedNode.currentStageOrder);
                   const canApprove = approvalInfo.canApprove && !isSubmittingApproval;
+                  const currentApprovalInfo = getCurrentApprovalInfo(selectedNode);
 
                   if (selectedNode.status !== 'pending_approval') {
                     return (
@@ -657,11 +683,16 @@ export const ProjectDetail = () => {
 
                   if (currentStage.role !== currentUser.role) {
                     const stageApprover = currentStage.approverId ? getUserById(currentStage.approverId) : null;
+                    const totalStages = selectedNode.approvalStages.length;
+                    const approvalRoundInfo = totalStages > 1
+                      ? `当前：第 ${selectedNode.currentStageOrder}/${totalStages} 轮 · ${currentStage.label}`
+                      : currentStage.label;
                     return (
                       <div className="p-4 bg-slate-50 rounded-xl mb-6 border border-slate-200 text-center">
                         <Clock className="w-6 h-6 text-slate-400 mx-auto mb-2" />
-                        <p className="text-sm text-slate-500 font-medium">
-                          当前阶段需要 {stageApprover?.name || roleLabels[currentStage.role as keyof typeof roleLabels]} 审批
+                        <p className="text-sm text-slate-500 font-medium mb-1">{approvalRoundInfo}</p>
+                        <p className="text-sm text-slate-400">
+                          等待 {stageApprover?.name || roleLabels[currentStage.role as keyof typeof roleLabels]} 审批
                         </p>
                       </div>
                     );
@@ -682,6 +713,26 @@ export const ProjectDetail = () => {
                           }
                         </p>
                       )}
+                      {currentApprovalInfo?.previousComment && currentApprovalInfo.isMultiLevel && (() => {
+                        const prevApprover = getUserById(currentApprovalInfo.previousComment.approverId);
+                        return (
+                          <div className="bg-slate-50 rounded-lg p-3 mb-3 text-sm">
+                            <div className="text-slate-500 mb-1">
+                              上一轮审批（{currentApprovalInfo.previousComment.stageLabel}）
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {prevApprover && <Avatar src={prevApprover.avatar} alt={prevApprover.name} size="sm" />}
+                              <span>{prevApprover?.name}</span>
+                              <span className={currentApprovalInfo.previousComment.decision === 'approved' ? 'text-emerald-600' : 'text-red-600'}>
+                                {currentApprovalInfo.previousComment.decision === 'approved' ? '通过' : '退回'}
+                              </span>
+                              {currentApprovalInfo.previousComment.comment && (
+                                <span className="text-slate-500">- {currentApprovalInfo.previousComment.comment}</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <div className="mb-3">
                         <label className="block text-sm font-medium text-violet-700 mb-1.5">审批意见（选填）</label>
                         <textarea
@@ -877,11 +928,12 @@ export const ProjectDetail = () => {
                                   </div>
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  {record.stageLabel && (
-                                    <div className="text-xs font-semibold text-slate-600 mb-1">
-                                      {record.stageLabel}：
-                                    </div>
-                                  )}
+                                  <div className="text-sm mb-1">
+                                    <span className="text-slate-500">{record.stageLabel || '审批'}：</span>
+                                    <span className={record.decision === 'approved' ? 'text-emerald-600' : 'text-red-600'}>
+                                      {record.comment || (record.decision === 'approved' ? '通过' : '退回')}
+                                    </span>
+                                  </div>
                                   <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
                                     <div className="flex items-center gap-2">
                                       {approver && (
@@ -911,12 +963,6 @@ export const ProjectDetail = () => {
                                   </div>
                                 </div>
                               </div>
-                              {record.comment && (
-                                <div className="mt-2 pt-3 border-t border-slate-200/60">
-                                  <div className="text-xs text-slate-500 mb-1">审批意见</div>
-                                  <p className="text-sm text-slate-700">{record.comment}</p>
-                                </div>
-                              )}
                               {record.decision === 'rejected' && (
                                 <div className="mt-2 pt-3 border-t border-slate-200/60">
                                   <div className="text-xs text-orange-600 bg-orange-50 rounded-lg p-2">

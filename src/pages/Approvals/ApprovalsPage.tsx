@@ -70,6 +70,50 @@ const getCurrentStageLabel = (node: ProjectNode): string => {
   return stages[approvedCount].label;
 };
 
+const getApprovalRoundText = (node: ProjectNode): string => {
+  const stages = node.approvalStages;
+  if (!stages || stages.length === 0) return '-';
+  const total = stages.length;
+
+  if (total === 1) {
+    if (node.status === 'completed') return '✓ 已完成';
+    if (node.status === 'rejected') return '✗ 已退回';
+    if (node.status === 'pending_approval') return '审批中';
+    return '-';
+  }
+
+  const approvedStages = stages.filter((s) => s.status === 'approved').length;
+  const rejectedStage = stages.find((s) => s.status === 'rejected');
+
+  if (rejectedStage) {
+    return `第${rejectedStage.order}/${total}轮 · 已退回`;
+  }
+
+  if (node.status === 'completed') {
+    return `${total}/${total}轮 · 已完成`;
+  }
+
+  if (node.status === 'pending_approval' && node.currentStageOrder > 0) {
+    const currentStageLabel = stages.find((s) => s.order === node.currentStageOrder)?.label || '';
+    return `第${node.currentStageOrder}/${total}轮 · ${currentStageLabel}`;
+  }
+
+  if (node.status === 'rejected') {
+    return `${approvedStages}/${total}轮 · 已退回`;
+  }
+
+  return `${approvedStages}/${total}轮`;
+};
+
+const getPreviousRoundComment = (node: ProjectNode): { text: string; isReject: boolean } | null => {
+  if (!node.approvalHistory || node.approvalHistory.length === 0) return null;
+  const latest = node.approvalHistory[node.approvalHistory.length - 1];
+  return {
+    text: latest.comment || (latest.decision === 'approved' ? '通过' : '退回'),
+    isReject: latest.decision === 'rejected',
+  };
+};
+
 const getApprovalPermission = (node: ProjectNode, userRole: 'admin' | 'manager' | 'executor'): { canApprove: boolean; disabledReason: string | null } => {
   if (node.status !== 'pending_approval') {
     return { canApprove: false, disabledReason: '当前节点不在待审批状态' };
@@ -162,16 +206,20 @@ export const ApprovalsPage = () => {
     );
     const passed = allApprovalNodes.filter((n) => n.status === 'completed');
     const rejected = allApprovalNodes.filter((n) => n.status === 'rejected');
-    const managerApprovals = allApprovalNodes.filter((n) => 
-      n.approvalType === 'manager' || 
-      (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
-       n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'manager')
-    );
-    const adminApprovals = allApprovalNodes.filter((n) => 
-      n.approvalType === 'admin' || 
-      (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
-       n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'admin')
-    );
+    const managerApprovals = allApprovalNodes.filter((n) => {
+      if (n.status !== 'pending_approval') {
+        return n.approvalType === 'manager';
+      }
+      const currentStage = n.approvalStages?.find((s) => s.order === n.currentStageOrder);
+      return n.approvalType === 'manager' || (n.approvalType === 'multi_level' && currentStage?.role === 'manager');
+    });
+    const adminApprovals = allApprovalNodes.filter((n) => {
+      if (n.status !== 'pending_approval') {
+        return n.approvalType === 'admin';
+      }
+      const currentStage = n.approvalStages?.find((s) => s.order === n.currentStageOrder);
+      return n.approvalType === 'admin' || (n.approvalType === 'multi_level' && currentStage?.role === 'admin');
+    });
     const multiLevelApprovals = allApprovalNodes.filter((n) => n.approvalType === 'multi_level');
     return {
       all: allApprovalNodes.length,
@@ -207,18 +255,22 @@ export const ApprovalsPage = () => {
         result = result.filter((n) => n.status === 'rejected');
         break;
       case 'manager':
-        result = result.filter((n) => 
-          n.approvalType === 'manager' || 
-          (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
-           n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'manager')
-        );
+        result = result.filter((n) => {
+          if (n.status !== 'pending_approval') {
+            return n.approvalType === 'manager';
+          }
+          const currentStage = n.approvalStages?.find((s) => s.order === n.currentStageOrder);
+          return n.approvalType === 'manager' || (n.approvalType === 'multi_level' && currentStage?.role === 'manager');
+        });
         break;
       case 'admin':
-        result = result.filter((n) => 
-          n.approvalType === 'admin' || 
-          (n.approvalType === 'multi_level' && n.status === 'pending_approval' && 
-           n.approvalStages.find(s => s.order === n.currentStageOrder)?.role === 'admin')
-        );
+        result = result.filter((n) => {
+          if (n.status !== 'pending_approval') {
+            return n.approvalType === 'admin';
+          }
+          const currentStage = n.approvalStages?.find((s) => s.order === n.currentStageOrder);
+          return n.approvalType === 'admin' || (n.approvalType === 'multi_level' && currentStage?.role === 'admin');
+        });
         break;
       case 'multi_level':
         result = result.filter((n) => n.approvalType === 'multi_level');
@@ -755,22 +807,6 @@ export const ApprovalsPage = () => {
                         const canApprove = canUserApprove(node, currentUser.role);
                         const pendingIds = getPendingApprovals(currentUser.id).map((n) => n.id);
                         const isMyApproval = pendingIds.includes(node.id);
-                        
-                        const approvedCount = node.approvalStages.filter(s => s.status === 'approved').length;
-                        const totalStages = node.approvalStages.length;
-                        const currentRound = approvedCount + 1;
-                        
-                        let lastComment: string | null = null;
-                        let lastCommentDecision: 'approved' | 'rejected' | null = null;
-                        if (node.approvalHistory.length > 0) {
-                          const lastRecord = [...node.approvalHistory].sort((a, b) => 
-                            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-                          )[0];
-                          if (lastRecord && lastRecord.comment) {
-                            lastComment = lastRecord.comment;
-                            lastCommentDecision = lastRecord.decision;
-                          }
-                        }
 
                         return (
                           <tr
@@ -839,26 +875,28 @@ export const ApprovalsPage = () => {
                             </td>
                             <td className="px-5 py-4">
                               <span className="text-sm text-slate-600">
-                                {totalStages > 0 ? `第 ${currentRound}/${totalStages} 轮` : '-'}
+                                {getApprovalRoundText(node)}
                               </span>
                             </td>
                             <td className="px-5 py-4">
-                              {lastComment ? (
-                                <span 
-                                  className={`text-sm truncate max-w-[150px] block ${
-                                    lastCommentDecision === 'rejected'
-                                      ? 'text-red-600'
-                                      : lastCommentDecision === 'approved'
-                                      ? 'text-emerald-600'
-                                      : 'text-slate-500'
-                                  }`}
-                                  title={lastComment}
-                                >
-                                  {lastComment.length > 20 ? lastComment.substring(0, 20) + '...' : lastComment}
-                                </span>
-                              ) : (
-                                <span className="text-sm text-slate-400">-</span>
-                              )}
+                              {(() => {
+                                const prev = getPreviousRoundComment(node);
+                                if (!prev) return <span className="text-sm text-slate-400">-</span>;
+                                if (prev.isReject) {
+                                  return (
+                                    <span className="flex items-center gap-1 text-sm text-red-600 truncate max-w-[150px]" title={prev.text}>
+                                      <XCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                                      {prev.text.length > 20 ? prev.text.substring(0, 20) + '...' : prev.text}
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span className="flex items-center gap-1 text-sm text-emerald-600 truncate max-w-[150px]" title={prev.text}>
+                                    <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                                    {prev.text.length > 20 ? prev.text.substring(0, 20) + '...' : prev.text}
+                                  </span>
+                                );
+                              })()}
                             </td>
                             <td className="px-5 py-4">
                               <StatusBadge status={node.status as Status} size="sm" />

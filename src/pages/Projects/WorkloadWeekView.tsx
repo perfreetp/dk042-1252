@@ -1,10 +1,10 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Calendar, Users, List, BarChart3, ChevronLeft, ChevronRight, X, Target } from 'lucide-react';
+import { Calendar, Users, List, BarChart3, ChevronLeft, ChevronRight, X, Target, AlertTriangle } from 'lucide-react';
 import { useProjectStore, useUserStore, useTemplateStore } from '@/store';
 import { Avatar } from '@/components/Avatar';
 import { Modal } from '@/components/Modal';
-import { formatDate, getTodayISO, addDays, getDateRange, daysBetween } from '@/utils';
+import { formatDate, getTodayISO, addDays, getDateRange, daysBetween, getDateStatus } from '@/utils';
 import { statusLabels, statusBorderColors, statusColors, roleLabels } from '@/utils/status';
 import type { Project, ProjectNode, Status, User, WorkflowTemplate } from '@/types';
 
@@ -54,7 +54,8 @@ interface PersonWorkload {
   totalTaskCount: number;
   loadLevel: 'idle' | 'moderate' | 'overload';
   dailyTasks: Map<string, { node: ProjectNode; project: Project }[]>;
-  continuousBlocks: { start: string; end: string; count: number }[];
+  conflictDates: string[];
+  continuousConflictBlocks: { start: string; end: string; tasks: { node: ProjectNode; project: Project }[] }[];
 }
 
 interface HoveredTask {
@@ -79,6 +80,14 @@ interface HeatmapTooltip {
   y: number;
 }
 
+interface ConflictCellTooltip {
+  user: User;
+  date: string;
+  tasks: { node: ProjectNode; project: Project }[];
+  x: number;
+  y: number;
+}
+
 export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
   const navigate = useNavigate();
   const { projects, checkAndUpdateOverdue } = useProjectStore();
@@ -95,6 +104,7 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
   const [conflictModal, setConflictModal] = useState<ConflictModalData | null>(null);
   const [heatmapTooltip, setHeatmapTooltip] = useState<HeatmapTooltip | null>(null);
+  const [conflictCellTooltip, setConflictCellTooltip] = useState<ConflictCellTooltip | null>(null);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const leftPanelRef = useRef<HTMLDivElement>(null);
@@ -139,6 +149,31 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
     });
   }, [myProjects, templateFilter, clientFilter]);
 
+  const collectBlockTasks = (
+    start: string,
+    end: string,
+    dailyTasks: Map<string, { node: ProjectNode; project: Project }[]>,
+  ): { node: ProjectNode; project: Project }[] => {
+    const seen = new Set<string>();
+    const tasks: { node: ProjectNode; project: Project }[] = [];
+    for (const date of getDateRange(start, end)) {
+      const dayTasks = dailyTasks.get(date) || [];
+      for (const task of dayTasks) {
+        if (!seen.has(task.node.id) && isNodeActive(task.node.status)) {
+          seen.add(task.node.id);
+          tasks.push(task);
+        }
+      }
+    }
+    return tasks;
+  };
+
+  const getTemplateName = (project: Project): string => {
+    if (project.templateName) return project.templateName;
+    const tpl = templates.find((t: WorkflowTemplate) => t.id === project.templateId);
+    return tpl?.name || '-';
+  };
+
   const personWorkloads = useMemo<Map<string, PersonWorkload>>(() => {
     const workloads = new Map<string, PersonWorkload>();
     const activeStatuses: Status[] = ['in_progress', 'pending', 'pending_approval', 'delayed', 'rejected'];
@@ -177,43 +212,57 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
         }
       }
 
-      const continuousBlocks: { start: string; end: string; count: number }[] = [];
+      const conflictDates: string[] = [];
+      for (const date of weekDates) {
+        const dayTasks = dailyTasks.get(date) || [];
+        const activeDayTasks = dayTasks.filter(t => isNodeActive(t.node.status));
+        if (activeDayTasks.length >= 2) {
+          conflictDates.push(date);
+        }
+      }
+
+      const continuousConflictBlocks: { start: string; end: string; tasks: { node: ProjectNode; project: Project }[] }[] = [];
       let blockStart: string | null = null;
       let blockLength = 0;
 
-      for (let i = 0; i < weekDates.length; i++) {
-        const date = weekDates[i];
-        const dayTasks = dailyTasks.get(date) || [];
-        const activeDayTasks = dayTasks.filter(t => isNodeActive(t.node.status));
-
-        if (activeDayTasks.length >= 1) {
-          if (blockStart === null) {
-            blockStart = date;
-          }
-          blockLength++;
+      for (let i = 0; i < conflictDates.length; i++) {
+        const date = conflictDates[i];
+        if (blockStart === null) {
+          blockStart = date;
+          blockLength = 1;
         } else {
-          if (blockStart !== null && blockLength >= 3) {
-            continuousBlocks.push({
-              start: blockStart,
-              end: weekDates[i - 1],
-              count: blockLength,
-            });
+          const prevDate = conflictDates[i - 1];
+          const prev = new Date(prevDate);
+          const curr = new Date(date);
+          const diffDays = Math.round((curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24));
+          if (diffDays === 1) {
+            blockLength++;
+          } else {
+            if (blockLength >= 3) {
+              const blockTasks = collectBlockTasks(blockStart, conflictDates[i - 1], dailyTasks);
+              continuousConflictBlocks.push({
+                start: blockStart,
+                end: conflictDates[i - 1],
+                tasks: blockTasks,
+              });
+            }
+            blockStart = date;
+            blockLength = 1;
           }
-          blockStart = null;
-          blockLength = 0;
         }
       }
 
       if (blockStart !== null && blockLength >= 3) {
-        continuousBlocks.push({
+        const blockTasks = collectBlockTasks(blockStart, conflictDates[conflictDates.length - 1], dailyTasks);
+        continuousConflictBlocks.push({
           start: blockStart,
-          end: weekDates[weekDates.length - 1],
-          count: blockLength,
+          end: conflictDates[conflictDates.length - 1],
+          tasks: blockTasks,
         });
       }
 
       let loadLevel: 'idle' | 'moderate' | 'overload' = 'idle';
-      if (activeTaskCount >= 4) {
+      if (conflictDates.length > 0 || activeTaskCount >= 4) {
         loadLevel = 'overload';
       } else if (activeTaskCount >= 2) {
         loadLevel = 'moderate';
@@ -225,7 +274,8 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
         totalTaskCount,
         loadLevel,
         dailyTasks,
-        continuousBlocks,
+        conflictDates,
+        continuousConflictBlocks,
       });
     }
 
@@ -294,28 +344,29 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
     });
   };
 
-  const handleContinuousBlockClick = (userId: string, block: { start: string; end: string; count: number }) => {
+  const handleContinuousBlockClick = (userId: string, block: { start: string; end: string; tasks: { node: ProjectNode; project: Project }[] }) => {
     const workload = personWorkloads.get(userId);
     if (!workload) return;
-
-    const allTasks: { node: ProjectNode; project: Project }[] = [];
-    const seenNodes = new Set<string>();
-
-    for (const date of getDateRange(block.start, block.end)) {
-      const tasks = workload.dailyTasks.get(date) || [];
-      for (const task of tasks) {
-        if (!seenNodes.has(task.node.id) && isNodeActive(task.node.status)) {
-          seenNodes.add(task.node.id);
-          allTasks.push(task);
-        }
-      }
-    }
 
     setConflictModal({
       user: workload.user,
       start: block.start,
       end: block.end,
-      tasks: allTasks,
+      tasks: block.tasks,
+    });
+  };
+
+  const handleConflictCellClick = (userId: string, date: string) => {
+    const workload = personWorkloads.get(userId);
+    if (!workload) return;
+    const tasks = (workload.dailyTasks.get(date) || []).filter(t => isNodeActive(t.node.status));
+    if (tasks.length < 2) return;
+
+    setConflictModal({
+      user: workload.user,
+      start: date,
+      end: date,
+      tasks,
     });
   };
 
@@ -694,7 +745,7 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
                     >
                       <div className="absolute left-0 right-0 border-b border-slate-100" />
 
-                      {workload.continuousBlocks.map((block, blockIdx) => {
+                      {workload.continuousConflictBlocks.map((block, blockIdx) => {
                         const startIdx = weekDates.findIndex(d => d === block.start);
                         const endIdx = weekDates.findIndex(d => d === block.end);
                         if (startIdx === -1 || endIdx === -1) return null;
@@ -719,6 +770,8 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
 
                       {weekDates.map((date, colIdx) => {
                         const tasks = workload.dailyTasks.get(date) || [];
+                        const activeDayTasks = tasks.filter(t => isNodeActive(t.node.status));
+                        const hasConflict = workload.conflictDates.includes(date);
                         const cellKey = `${userId}-${date}`;
                         const isExpanded = expandedCells.has(cellKey);
                         const displayTasks = isExpanded ? tasks : tasks.slice(0, 1);
@@ -729,15 +782,35 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
                         return (
                           <div
                             key={`cell-${userId}-${date}`}
-                            className={`absolute top-1 bottom-1 px-1 py-0.5 flex flex-col gap-1 ${
-                              isSelected ? 'bg-amber-50' : ''
+                            className={`absolute top-1 bottom-1 px-1 py-0.5 flex flex-col gap-1 relative ${
+                              hasConflict ? 'bg-red-50 cursor-pointer' : isSelected ? 'bg-amber-50' : ''
                             }`}
                             style={{
                               left: colIdx * DAY_WIDTH,
                               width: DAY_WIDTH,
                               zIndex: isExpanded ? 10 : 1,
                             }}
+                            onClick={() => {
+                              if (hasConflict) {
+                                handleConflictCellClick(userId, date);
+                              }
+                            }}
+                            onMouseEnter={(e) => {
+                              if (hasConflict) {
+                                setConflictCellTooltip({
+                                  user: workload.user,
+                                  date,
+                                  tasks: activeDayTasks,
+                                  x: e.clientX,
+                                  y: e.clientY,
+                                });
+                              }
+                            }}
+                            onMouseLeave={() => setConflictCellTooltip(null)}
                           >
+                            {hasConflict && (
+                              <div className="absolute top-0 left-0 w-2 h-2 bg-red-500 rounded-full z-10" />
+                            )}
                             {displayTasks.map(({ node, project }, taskIdx) => {
                               const borderColors: Record<Status, string> = {
                                 pending: 'border-l-slate-400',
@@ -947,66 +1020,134 @@ export const WorkloadWeekView = ({ onViewChange }: WorkloadWeekViewProps) => {
         </div>
       )}
 
+      {conflictCellTooltip && (
+        <div
+          className="fixed z-50 pointer-events-none bg-slate-800 text-white rounded-lg shadow-lg px-3 py-2 text-xs max-w-64"
+          style={{
+            left: conflictCellTooltip.x + 8,
+            top: conflictCellTooltip.y + 8,
+          }}
+        >
+          <div className="font-medium mb-1">
+            {new Date(conflictCellTooltip.date).getMonth() + 1}月{new Date(conflictCellTooltip.date).getDate()}日 · {conflictCellTooltip.user.name} · {conflictCellTooltip.tasks.length}个任务重叠
+          </div>
+          <div className="space-y-0.5">
+            {conflictCellTooltip.tasks.map(({ node, project }) => (
+              <div key={node.id} className="text-slate-300">
+                {node.name} - {project.clientName}
+              </div>
+            ))}
+          </div>
+          <div className="text-amber-400 mt-1">点击查看详情</div>
+        </div>
+      )}
+
       <Modal
         isOpen={!!conflictModal}
         onClose={() => setConflictModal(null)}
-        title={`任务冲突 - ${conflictModal?.user.name}`}
+        title={`任务冲突详情 - ${conflictModal?.user.name}`}
+        size="lg"
       >
-        {conflictModal && (
-          <div className="space-y-4">
-            <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
-              <div className="flex items-center gap-2 text-orange-700 font-medium text-sm">
-                <Target className="w-4 h-4" />
-                <span>连续 {conflictModal.end === conflictModal.start ? 1 : daysBetween(conflictModal.start, conflictModal.end) + 1} 天排满</span>
-              </div>
-              <div className="text-xs text-orange-600 mt-1">
-                {formatDate(conflictModal.start)} - {formatDate(conflictModal.end)}
-              </div>
-            </div>
+        {conflictModal && (() => {
+          const totalDays = daysBetween(conflictModal.start, conflictModal.end) + 1;
+          const hasDelayed = conflictModal.tasks.some(t => t.node.status === 'delayed');
+          const hasRisk = conflictModal.tasks.some(t => {
+            const ds = getDateStatus(t.node.dueDate, t.node.status);
+            return ds.level === 'warning';
+          });
 
-            <div className="space-y-2 max-h-80 overflow-y-auto">
-              {conflictModal.tasks.map(({ node, project }) => (
-                <div
-                  key={node.id}
-                  className="bg-white border border-slate-200 rounded-lg p-3 hover:border-amber-300 hover:bg-amber-50/50 cursor-pointer transition-colors"
-                  onClick={() => {
-                    navigate(`/projects/${project.id}`);
-                    setConflictModal(null);
-                  }}
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="font-medium text-sm text-slate-800">{node.name}</div>
-                      <div className="text-xs text-slate-500 mt-1">{project.name}</div>
+          return (
+            <div className="space-y-4">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <div className="flex items-center gap-2 text-red-700 font-medium text-sm">
+                  <Target className="w-4 h-4" />
+                  <span>冲突时间段：{formatDate(conflictModal.start)} ~ {formatDate(conflictModal.end)}（{totalDays}天）</span>
+                </div>
+                <div className="text-xs text-red-600 mt-1">
+                  以下节点在此时间段内时间重叠
+                </div>
+              </div>
+
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {conflictModal.tasks.map(({ node, project }) => {
+                  const dateStatus = getDateStatus(node.dueDate, node.status);
+                  const statusIcon = node.status === 'delayed' ? '🔴' : node.status === 'in_progress' ? '🟠' : node.status === 'pending' ? '⚪' : '🔵';
+
+                  return (
+                    <div
+                      key={node.id}
+                      className="bg-white border border-slate-200 rounded-lg p-3 hover:border-amber-300 hover:bg-amber-50/50 cursor-pointer transition-colors"
+                      onClick={() => {
+                        navigate(`/projects/${project.id}?nodeId=${node.id}`);
+                        setConflictModal(null);
+                      }}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="font-medium text-sm text-slate-800">
+                            <span className="mr-1">{statusIcon}</span>
+                            {node.name} - {project.name}
+                          </div>
+                        </div>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${statusColors[node.status]}`}>
+                          {statusLabels[node.status]}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-2 text-xs text-slate-500">
+                        <div>
+                          <span className="text-slate-400">客户：</span>
+                          <span className="text-slate-700">{project.clientName}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400">模板：</span>
+                          <span className="text-slate-700">{getTemplateName(project)}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          <span>{formatDate(getNodeStart(node, project.startDate)).slice(5)} ~ {formatDate(getNodeEnd(node)).slice(5)}</span>
+                        </div>
+                        <div>
+                          <span className={`text-xs ${dateStatus.className}`}>
+                            {dateStatus.label}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${statusColors[node.status]}`}>
-                      {statusLabels[node.status]}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
-                    <div className="flex items-center gap-1">
-                      <Calendar className="w-3 h-3" />
-                      <span>{formatDate(getNodeStart(node, project.startDate))} - {formatDate(getNodeEnd(node))}</span>
+                  );
+                })}
+              </div>
+
+              {(hasDelayed || hasRisk) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                  {hasDelayed && (
+                    <div className="flex items-center gap-1.5 text-xs text-red-600 font-medium">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      其中有已逾期节点，建议优先处理
                     </div>
-                    <div className="flex items-center gap-1">
-                      <Users className="w-3 h-3" />
-                      <span>{getUserById(node.assigneeId)?.name}</span>
+                  )}
+                  {hasRisk && (
+                    <div className="flex items-center gap-1.5 text-xs text-orange-600 font-medium">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      其中有临近截止的节点
                     </div>
+                  )}
+                  <div className="text-xs text-amber-700 mt-1">
+                    建议：考虑调整节点负责人或重新排期
                   </div>
                 </div>
-              ))}
-            </div>
+              )}
 
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setConflictModal(null)}
-                className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-              >
-                关闭
-              </button>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => setConflictModal(null)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                >
+                  关闭
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </Modal>
     </div>
   );

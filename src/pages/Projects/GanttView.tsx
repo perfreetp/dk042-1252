@@ -1,9 +1,9 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Calendar, Users, List, BarChart3, ChevronRight, Filter, Layers, Building2, Zap, AlertTriangle } from 'lucide-react';
+import { Calendar, Users, List, BarChart3, ChevronRight, Filter, Layers, Building2, Zap, AlertTriangle, Crosshair } from 'lucide-react';
 import { useProjectStore, useUserStore, useTemplateStore } from '@/store';
 import { Avatar } from '@/components/Avatar';
-import { formatDate, daysBetween, getTodayISO, addDays, getDateRange, getProjectRiskLevel, isNodeRisky, isNodeOverdue } from '@/utils';
+import { formatDate, daysBetween, getTodayISO, addDays, getDateRange, getProjectRiskLevel, isNodeRisky, isNodeOverdue, isProjectAtRisk, isProjectOverdue, getOverdueDays, getDaysUntilDue } from '@/utils';
 import { statusLabels, statusBorderColors } from '@/utils/status';
 import type { Project, ProjectNode, Status, User } from '@/types';
 
@@ -209,6 +209,9 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
   const [clientFilter, setClientFilter] = useState<string>('all');
   const [criticalPathOnly, setCriticalPathOnly] = useState<boolean>(false);
   const [overloadedOnly, setOverloadedOnly] = useState<boolean>(false);
+  const [riskFilter, setRiskFilter] = useState<'all' | 'risk' | 'overdue'>('all');
+  const [highlightedRiskNodeId, setHighlightedRiskNodeId] = useState<string | null>(null);
+  const [riskNavIndex, setRiskNavIndex] = useState(0);
 
   const [hoveredNode, setHoveredNode] = useState<{ node: ProjectNode; project: Project; x: number; y: number } | null>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -295,6 +298,8 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
       if (clientFilter !== 'all' && project.clientName !== clientFilter) return false;
       if (dateStart && project.endDate < dateStart) return false;
       if (dateEnd && project.startDate > dateEnd) return false;
+      if (riskFilter === 'risk' && !(isProjectAtRisk(project) && !isProjectOverdue(project))) return false;
+      if (riskFilter === 'overdue' && !isProjectOverdue(project)) return false;
       return true;
     });
 
@@ -341,7 +346,7 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
       projectRiskMap: riskMap,
       projectRowSpanMap: rowSpanMap,
     };
-  }, [myProjects, assigneeFilter, statusFilter, dateStart, dateEnd, templateFilter, clientFilter, criticalPathOnly, overloadedOnly, overloadedUsers]);
+  }, [myProjects, assigneeFilter, statusFilter, dateStart, dateEnd, templateFilter, clientFilter, criticalPathOnly, overloadedOnly, overloadedUsers, riskFilter]);
 
   const dateList = useMemo(() => {
     const dates: string[] = [];
@@ -373,6 +378,36 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
       })
       .filter((s): s is PersonSummary => s !== null);
   }, [myProjects, getUserById, totalTimeframeDays, continuousOverloadUsers]);
+
+  const riskNodes = useMemo(() => {
+    const nodes: { rowIdx: number; nodeId: string; node: ProjectNode; project: Project; startOffset: number }[] = [];
+    flattenedRows.forEach((row, rowIdx) => {
+      if (row.type !== 'node') return;
+      const node = row.node!;
+      if (node.status === 'completed') return;
+      if (!isNodeRisky(node) && !isNodeOverdue(node)) return;
+      const nodeStart = getNodeStart(node, row.project.startDate);
+      const startOffset = daysBetween(globalStart, nodeStart) * DAY_WIDTH;
+      nodes.push({ rowIdx, nodeId: node.id, node, project: row.project, startOffset });
+    });
+    return nodes;
+  }, [flattenedRows, globalStart]);
+
+  const handleNavigateToRiskNode = useCallback(() => {
+    if (riskNodes.length === 0) return;
+    const idx = riskNavIndex % riskNodes.length;
+    const target = riskNodes[idx];
+    if (timelineRef.current) {
+      const scrollLeft = Math.max(0, target.startOffset - timelineRef.current.clientWidth / 3);
+      timelineRef.current.scrollTo({ left: scrollLeft, top: target.rowIdx * ROW_HEIGHT - timelineRef.current.clientHeight / 3, behavior: 'smooth' });
+    }
+    if (leftPanelRef.current) {
+      leftPanelRef.current.scrollTo({ top: target.rowIdx * ROW_HEIGHT - leftPanelRef.current.clientHeight / 3, behavior: 'smooth' });
+    }
+    setHighlightedRiskNodeId(target.nodeId);
+    setRiskNavIndex(idx + 1);
+    setTimeout(() => setHighlightedRiskNodeId(null), 3000);
+  }, [riskNodes, riskNavIndex]);
 
   const syncScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (timelineRef.current) {
@@ -540,6 +575,29 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap mt-3 pt-3 border-t border-slate-100">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-slate-400" />
+            <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+              {([
+                { value: 'all' as const, label: '全部' },
+                { value: 'risk' as const, label: '有风险' },
+                { value: 'overdue' as const, label: '已逾期' },
+              ]).map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => { setRiskFilter(opt.value); setRiskNavIndex(0); }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                    riskFilter === opt.value
+                      ? 'bg-white text-slate-800 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <button
             onClick={() => setCriticalPathOnly(!criticalPathOnly)}
             className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg border-2 transition-all focus:ring-2 focus:ring-violet-500 focus:outline-none ${
@@ -563,6 +621,16 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
             <AlertTriangle className={`w-4 h-4 ${overloadedOnly ? 'text-red-300' : 'text-slate-400'}`} />
             只看过载人员
           </button>
+
+          {riskFilter !== 'all' && riskNodes.length > 0 && (
+            <button
+              onClick={handleNavigateToRiskNode}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition-colors shadow-sm"
+            >
+              <Crosshair className="w-4 h-4" />
+              ⬇ 定位到风险节点 ({riskNodes.length})
+            </button>
+          )}
         </div>
       </div>
 
@@ -627,17 +695,22 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
                   const dimmed = criticalPathOnly && !isCritical;
                   const isOverloadedRow = overloadedUsers.has(node.assigneeId);
                   const hasContinuousOverload = assignee && continuousOverloadUsers.has(assignee.id);
+                  const nodeIsOverdue = node.status !== 'completed' && isNodeOverdue(node);
+                  const nodeIsRisky = node.status !== 'completed' && isNodeRisky(node) && !nodeIsOverdue;
 
                   return (
                     <div
                       key={`node-${node.id}-${idx}`}
                       className={`px-4 flex items-center border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors relative ${
                         isOverloadedRow && !overloadedOnly ? 'bg-red-50/60' : ''
-                      } ${dimmed ? 'opacity-50' : ''}`}
+                      } ${dimmed ? 'opacity-50' : ''} ${nodeIsOverdue && riskFilter !== 'all' ? 'border-l-2 border-l-red-400' : nodeIsRisky && riskFilter !== 'all' ? 'border-l-2 border-l-amber-400' : ''}`}
                       style={{ height: ROW_HEIGHT, minHeight: ROW_HEIGHT }}
                       onClick={() => navigate(`/projects/${row.project.id}`)}
                     >
                       <div className="flex-1 min-w-0 flex items-center gap-2 pl-6">
+                        {(nodeIsOverdue || nodeIsRisky) && riskFilter !== 'all' && (
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeIsOverdue ? 'bg-red-400' : 'bg-amber-400'}`} />
+                        )}
                         <span className="text-xs text-slate-600 truncate flex-1" title={node.name}>
                           {node.name}
                         </span>
@@ -803,10 +876,13 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
 
                   const getRiskBorderClass = () => {
                     if (node.status === 'completed') return '';
-                    if (isOverdue) return 'ring-2 ring-red-500 ring-offset-1';
-                    if (isRisky) return 'ring-2 ring-orange-400 ring-offset-1';
+                    if (isOverdue) return 'ring-2 ring-red-400';
+                    if (isRisky) return 'ring-2 ring-amber-400';
                     return '';
                   };
+
+                  const isHighlighted = highlightedRiskNodeId === node.id;
+                  const effectiveBorderLeft = node.status !== 'completed' && isOverdue ? 'border-l-red-500' : borderColors[node.status];
 
                   return (
                     <div key={`nodeline-${rowIdx}-${node.id}`}>
@@ -815,9 +891,9 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
                         style={{ top: rowIdx * ROW_HEIGHT + ROW_HEIGHT }}
                       />
                       <div
-                        className={`absolute rounded-md cursor-pointer border-l-4 transition-all hover:shadow-md ${bgClass} ${borderColors[node.status]} ${
-                          isCritical ? 'ring-2 ring-amber-400 ring-offset-1' : ''
-                        } ${isToday ? 'ring-1 ring-red-300' : ''} ${dimmed ? 'opacity-50' : ''} ${getRiskBorderClass()} focus:outline-none focus:ring-4 ${isOverdue ? 'focus:ring-red-300' : isRisky ? 'focus:ring-orange-300' : 'focus:ring-amber-300'}`}
+                        className={`absolute rounded-md cursor-pointer border-l-4 transition-all hover:shadow-md ${bgClass} ${effectiveBorderLeft} ${
+                          isCritical ? 'ring-2 ring-amber-400' : ''
+                        } ${isToday ? 'ring-1 ring-red-300' : ''} ${dimmed ? 'opacity-50' : ''} ${riskFilter !== 'all' ? getRiskBorderClass() : ''} ${isHighlighted ? 'ring-4 ring-amber-400 animate-pulse z-30' : ''} focus:outline-none focus:ring-4 ${isOverdue ? 'focus:ring-red-300' : isRisky ? 'focus:ring-orange-300' : 'focus:ring-amber-300'}`}
                         style={{
                           left: startOffset + 2,
                           top: rowIdx * ROW_HEIGHT + ROW_HEIGHT + 6,
@@ -965,6 +1041,16 @@ export const GanttView = ({ onViewChange }: GanttViewProps) => {
             {criticalPathMap.get(hoveredNode.project.id)?.has(hoveredNode.node.id) && (
               <div className="text-amber-400 pt-1 border-t border-slate-600 mt-2">
                 ⚡ 关键路径节点
+              </div>
+            )}
+            {hoveredNode.node.status !== 'completed' && isNodeOverdue(hoveredNode.node) && (
+              <div className="text-red-400 pt-1 border-t border-slate-600 mt-2">
+                ⚠️ 已逾期 {getOverdueDays(hoveredNode.node.dueDate)} 天
+              </div>
+            )}
+            {hoveredNode.node.status !== 'completed' && !isNodeOverdue(hoveredNode.node) && isNodeRisky(hoveredNode.node) && (
+              <div className="text-amber-400 pt-1 border-t border-slate-600 mt-2">
+                ⚠️ 还剩 {getDaysUntilDue(hoveredNode.node.dueDate)} 天截止
               </div>
             )}
             {isNodeInContinuousOverload(
